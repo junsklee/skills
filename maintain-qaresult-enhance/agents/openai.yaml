@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maintain QAResult Enhance"
+  short_description: "QAHome qaresult_enhance workflow and deploy"
+  default_prompt: "Use $maintain-qaresult-enhance to modify qaresult_enhance in ~/cubrid-testtools-internal and, when needed, sync it into ~/qaresult_en for local Tomcat verification."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Draft And Submit Korean JIRA"
+  short_description: "git diff 기반 CUBRIDQA 이슈 초안 및 등록"
+  default_prompt: "Use $draft-korean-jira-from-diff to draft a Korean QAHome JIRA issue from the current git diff, preview the CUBRIDQA Task payload, and submit it after confirmation."

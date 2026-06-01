@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create CUBRID Testtools PR"
+  short_description: "CUBRIDQA JIRA 기반 GitHub PR 생성"
+  default_prompt: "Use $create-cubrid-testtools-pr to preview, push, and create a GitHub PR for the current cubrid-testtools-internal branch after confirmation."

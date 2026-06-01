@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maintain QAHome TPCH"
+  short_description: "QAHome TPCH viewer와 schema 유지보수 가이드"
+  default_prompt: "Use $maintain-qahome-tpch to inspect and update QAHome TPCH code, schema semantics, charts, and related production triage."
