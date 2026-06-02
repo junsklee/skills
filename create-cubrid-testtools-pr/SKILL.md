@@ -13,7 +13,7 @@ Create GitHub PRs from `~/cubrid-testtools-internal` to upstream `CUBRID/cubrid-
 
 1. Inspect local state: current branch, `git status --short --branch`, recent commits, and the JIRA key from user context, branch name, or commit messages.
 2. Do not create a PR from `develop`, `master`, `main`, or `release/*` unless the user explicitly overrides this safety check.
-3. Draft PR title as `[CUBRIDQA-####] <actual title>`. Preserve `[QAHome]` only when it is part of the real feature title.
+3. Draft PR title as `[CUBRIDQA-####] <actual title>`. The title must always be in English. Preserve `[QAHome]` only when it is part of the real feature title.
 4. Draft PR body in Korean with the JIRA link as the first line: `http://jira.cubrid.org/browse/CUBRIDQA-####`.
 5. Preview with `scripts/create_github_pr.py` in dry-run mode and show the branch, push target, PR head/base, title, and body.
 6. After explicit user confirmation, run the same helper with `--submit --confirmed`.
@@ -24,6 +24,7 @@ Create GitHub PRs from `~/cubrid-testtools-internal` to upstream `CUBRID/cubrid-
 - Head repo: `junsklee/cubrid-testtools-internal`
 - Base branch: `develop` by default
 - Push target: `origin HEAD:<current-branch>`
+- Title must always be in English
 - Body style from recent repo history:
   - start with the JIRA URL
   - write the summary paragraph and bullets in Korean
