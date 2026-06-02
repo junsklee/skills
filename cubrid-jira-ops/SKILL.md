@@ -43,6 +43,10 @@ command -v cubrid-jira || echo "run references/setup.md first"
 `search` takes a single **issue key or browse URL** and prints the issue as markdown to
 stdout (cache-first). It has no `--output json`.
 
+> Requires the local read-auth patch (see [references/setup.md](references/setup.md)).
+> Without it, `search` returns HTTP 401 on this instance because upstream's read path is
+> unauthenticated. The authenticated commands below work regardless.
+
 ```bash
 cubrid-jira search CUBRIDQA-1370               # markdown to stdout, cache-first
 cubrid-jira search CUBRIDQA-1370 --no-recurse  # fetch only this issue, skip linked issues

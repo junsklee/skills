@@ -67,6 +67,29 @@ cubrid-jira search <known CUBRIDQA key> --output json
 The last command should print a real summary/status and warm the read cache at
 `~/.local/share/cubrid-jira/issues/` (override with `CUBRID_JIRA_DIR`).
 
+## Local patch: authenticate the read path (required for `search`)
+
+`cubrid-jira`'s `search` does an **unauthenticated** GET (`cubrid_jira/http.py` →
+`fetch_issue`), assuming anonymous browse is enabled. `jira.cubrid.org` requires auth even
+for reads, so without a patch `search` returns **HTTP 401** (authenticated commands like
+`comment-list`/`transition`/writes are unaffected — they already send credentials).
+
+We apply a **local patch** (no upstream PR) that makes `fetch_issue` send Basic auth from
+the resolved credentials, falling back to anonymous when none are set. Re-apply it after any
+`uv tool upgrade cubrid-jira`, which overwrites the installed copy:
+
+```bash
+~/.local/share/uv/tools/cubrid-jira/bin/python3 \
+    ~/skills/cubrid-jira-ops/references/apply-read-auth-patch.py
+# --check reports status without modifying anything (exit 0 patched, 1 not)
+```
+
+The script is idempotent. After patching, verify:
+
+```bash
+cubrid-jira search CUBRIDQA-1370 --no-recurse --force   # should print issue markdown
+```
+
 ## Notes
 
 - The tool's default project key is `CBRD`; this team uses **`CUBRIDQA`** — always pass
