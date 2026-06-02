@@ -12,11 +12,12 @@ Create GitHub PRs from `~/cubrid-testtools-internal` to upstream `CUBRID/cubrid-
 ## Workflow
 
 1. Inspect local state: current branch, `git status --short --branch`, recent commits, and the JIRA key from user context, branch name, or commit messages.
-2. Do not create a PR from `develop`, `master`, `main`, or `release/*` unless the user explicitly overrides this safety check.
-3. Draft PR title as `[CUBRIDQA-####] <actual title>`. The title must always be in English. Preserve `[QAHome]` only when it is part of the real feature title.
-4. Draft PR body in Korean with the JIRA link as the first line: `http://jira.cubrid.org/browse/CUBRIDQA-####`.
-5. Preview with `scripts/create_github_pr.py` in dry-run mode and show the branch, push target, PR head/base, title, and body.
-6. After explicit user confirmation, run the same helper with `--submit --confirmed`.
+2. Validate the JIRA key with `cubrid-jira search <KEY> --no-recurse` (read-only, cache-first; prints the issue as markdown — see the `cubrid-jira-ops` skill). Confirm the key resolves and read its summary/status from the output. If it does not resolve, ask the user for the correct key instead of trusting branch/commit inference. If `cubrid-jira` is not installed, skip this validation with a warning — do not block PR creation.
+3. Do not create a PR from `develop`, `master`, `main`, or `release/*` unless the user explicitly overrides this safety check.
+4. Draft PR title as `[CUBRIDQA-####] <actual title>`. The title must always be in English. Preserve `[QAHome]` only when it is part of the real feature title.
+5. Draft PR body in Korean with the JIRA link as the first line: `http://jira.cubrid.org/browse/CUBRIDQA-####`. Optionally include the JIRA `summary`/`status` from step 2 in the dry-run preview for reviewer context.
+6. Preview with `scripts/create_github_pr.py` in dry-run mode and show the branch, push target, PR head/base, title, and body.
+7. After explicit user confirmation, run the same helper with `--submit --confirmed`.
 
 ## PR Format
 

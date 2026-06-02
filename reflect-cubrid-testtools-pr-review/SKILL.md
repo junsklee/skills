@@ -63,6 +63,12 @@ Typical flow:
 - Reply inline on each actionable review thread.
 - Replies should be concise Korean, factual, and mention the commit hash.
 
+8. (Optional, off by default — only if the user asks) Reflect the follow-up on JIRA via the `cubrid-jira-ops` skill / `cubrid-jira` CLI.
+- Derive `<KEY>` from the PR title `[CUBRIDQA-####]` or the branch name.
+- Add a Korean progress comment: write the body to a temp file, preview with `cubrid-jira comment <KEY> --body-file <tmp>`, then add `--yes` after confirmation.
+- If a status change is expected, list transitions with `cubrid-jira transition <KEY>`, then `cubrid-jira transition <KEY> --to "<STATUS>" --yes` after confirmation.
+- Skip silently if `cubrid-jira` is not installed.
+
 ## GitHub API Usage
 
 Use `bash -lc` when calling Python or curl helpers that depend on `GITHUB_TOKEN`, because this environment may have shell variables that are not exported to child processes by default.
@@ -123,6 +129,8 @@ Top-level summary comment template:
 
 - Do not stage or commit unrelated dirty files.
 - Do not overwrite the user’s local untracked files or generated artifacts.
+
+- Do not comment on or transition the JIRA issue unless the corresponding fix is already committed and pushed. Always run the `cubrid-jira` write as a dry-run first and add `--yes` only after explicit user confirmation.
 
 ## CUBRID Repo Conventions
 
