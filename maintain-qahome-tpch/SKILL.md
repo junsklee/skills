@@ -13,7 +13,7 @@ Use this skill for QAHome TPCH reader/viewer work in the legacy WebWork + iBatis
 
 1. Work in `~/cubrid-testtools-internal/qaresult_enhance`.
 2. Before changing TPCH semantics, read `references/runtime-model.md` and `references/file-map.md`.
-3. If the work touches charts, compare rows, history drilldowns, or pass/fail columns, also read `references/change-playbook.md`.
+3. If the work touches charts, compare rows, history drilldowns, or pass/fail columns, also read `references/change-playbook.md`. For the version-comparison chart (Current/Compared, Context toggle, Major->Build cascade, editable x-axis), also read `references/version-compare-chart.md`.
 4. If the task comes from a production SQL log or DB-only symptom, read `references/triage.md` first.
 5. If the request involves CPTP resource/config integration, read `references/cptp-integration.md`.
 
@@ -22,6 +22,7 @@ Use this skill for QAHome TPCH reader/viewer work in the legacy WebWork + iBatis
 - Treat TPCH as a specialized slice of QAHome, not a generic performance table.
 - Prefer minimal diffs against `develop`; TPCH merge conflicts cluster in `PerformanceManageAction`, `com.nhncorp.qaresult.xml`, and `showPerformance.jsp`.
 - Do not assume Power and Throughput share the same persistence or viewer semantics; verify the current runtime model first.
+- For the version-comparison chart (`showTpchChart` / `tpch_query_chart.jsp`): a build can have multiple runs, `uniqueBuilds` keeps only the canonical (`MAX(start_time)`) run, and `baseline_build` is a per-run pointer (not per-major). Pass canonical `main_id`s, keep chart windows as copies (never mutate `uniqueBuilds`), and sanitize reflected request params. The chart page has no jQuery. See `references/version-compare-chart.md`.
 - If local TPCH docs exist in the worktree, such as `qaresult_enhance/AGENTS.md` or `qaresult_enhance/doc/doc/features/tpch/README.md`, read them before changing behavior. Those files may be untracked but still authoritative for the current branch.
 - For production issues, distinguish between:
   - a query emitted by QAHome source in this repo
@@ -44,5 +45,6 @@ Use this skill for QAHome TPCH reader/viewer work in the legacy WebWork + iBatis
 - `references/file-map.md`: TPCH hotspot files and what each one owns.
 - `references/runtime-model.md`: current TPCH canonical/history model, Power vs Throughput distinctions, and naming gotchas.
 - `references/change-playbook.md`: common change patterns for tables, charts, history drilldowns, docs, and minimal-diff strategy.
+- `references/version-compare-chart.md`: version-comparison chart UI model, canonical vs run-specific `main_id` traps, XSS / no-jQuery notes, and local verification.
 - `references/triage.md`: production issue workflow, SQL-log interpretation, and known TPCH failure patterns.
 - `references/cptp-integration.md`: QAHome <-> CPTP integration points for monitor resources, `msg_id`, and `general_test_log`.
