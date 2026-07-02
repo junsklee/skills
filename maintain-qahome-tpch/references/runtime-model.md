@@ -68,3 +68,13 @@ These semantics changed during the session and should be re-verified on each bra
 - Throughput may keep `Sum (Sec)` as the SQL-total metric instead of adding another column
 
 Read the current table columns and docs before changing labels.
+
+## Build identity and main_id (version-compare chart)
+
+- A `test_build` can have multiple FINISHED runs. `selectTpchBuildListByScale` (-> `uniqueBuilds`) returns
+  one row per build, the `MAX(start_time)` run = the **canonical** `main_id`; `mainBuildOptions` mirrors it.
+- `baseline_build` is a per-run rolling pointer, NOT a per-major baseline; a build line can carry several
+  baselines over time.
+- `applyTpchChartRunSelection` rewrites window rows' `main_id` to a run-specific id (Current's selected run,
+  a baseline's first finished run), which differs from the canonical id. Keep chart windows as COPIES so this
+  never mutates `uniqueBuilds`/`mainBuildOptions`. Full detail in `references/version-compare-chart.md`.

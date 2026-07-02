@@ -7,16 +7,21 @@
   - chart context resolution
   - compare/history/history-status row shaping
   - pass/fail, memo, and TPCH-specific display fields
+  - version-compare chart resolution: canonical vs run-specific `main_id`, explicit/baseline windows (`references/version-compare-chart.md`)
 - `qaresult_enhance/src/sqlmap/com.nhncorp.qaresult.xml`
   - TPCH iBatis SQL
   - `tpch_main`, `tpch_power_test`, `tpch_thput_test`, `tpch_items`, `tpch_items_his`
   - compare/history/modal/history-status queries
+  - `selectTpchBuildListByScale` (one canonical row per build = MAX start_time), `selectTpchBaselineBuildsByScale`
 - `qaresult_enhance/web/WEB-INF/jsp/showPerformance.jsp`
   - TPCH Power / Throughput tables in the Performance tab
   - column order, memo/pass-fail/verified cells, resource links
 - `qaresult_enhance/web/WEB-INF/jsp/perf/tpch_query_chart.jsp`
   - TPCH chart UI
   - client-side query ordering, tooltip behavior, stream selection, same-build display
+  - version comparison: `Current`/`Compared`, `Context` (Previous|Baseline) toggle, Major->Build cascade
+  - editable x-axis "custom mode" (`builds=` param), rightmost-locked Current, hover affordance
+  - standalone page: echarts only, NO jQuery (vanilla JS). See `references/version-compare-chart.md`
 - `qaresult_enhance/web/WEB-INF/jsp/perf/tpch_failed_list.jsp`
   - compare-based failed-query list
 - `qaresult_enhance/web/WEB-INF/jsp/perf/tpch_history_status_list.jsp`

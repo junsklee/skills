@@ -69,3 +69,18 @@ TPCH work tends to conflict in shared hotspot files. Prefer this order of option
 4. avoid broad cross-layer changes unless the request explicitly needs end-to-end behavior change
 
 This matters for hotfixes and PRs against `develop`.
+
+## 6. Version-comparison chart changes (`showTpchChart`)
+
+When the request touches `Current`/`Compared`, the `Context` (Previous/Baseline) toggle, the Major->Build
+cascade, baseline windows, or the editable x-axis, read `references/version-compare-chart.md` first. Recurring
+rules that caused real bugs this is built on:
+
+- A build can have multiple FINISHED runs; `uniqueBuilds` holds only the canonical (`MAX(start_time)`) run.
+- Window builders add COPIES of `uniqueBuilds` rows; `applyTpchChartRunSelection` mutates them otherwise.
+- Pass/echo CANONICAL `main_id`s for the explicit `builds=` set (capture the echo before run selection);
+  run-specific ids get dropped on reload.
+- Force `Current` once and rightmost in a custom window; it is the classification reference.
+- Sanitize reflected request params (`mainId`, `prevMainId`, `testBuild`, `scaleFactor`, `streamSelection`,
+  `builds`) server-side — the JSP reflects them unescaped (XSS).
+- `tpch_query_chart.jsp` has no jQuery (echarts only); cascades/menus are vanilla JS.

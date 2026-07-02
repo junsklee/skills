@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maintain QAHome Join Order"
+  short_description: "Join Order 벤치마크(writer cptp + viewer qaresult_enhance) 유지보수 가이드"
+  default_prompt: "Use $maintain-qahome-joinorder to inspect and update the Join Order benchmark: the cptp writer (JoinOrder.java + test_cubrid.sh), the qaresult_enhance viewer, the join_order_* schema, baseline/timeout/plan-diff semantics, running on a SUT, and qaresu triage."
