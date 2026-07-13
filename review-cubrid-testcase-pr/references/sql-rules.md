@@ -70,7 +70,7 @@ approve a semantically wrong expected result because the plan looks right.
 
 When a hinted query's EXPECTED plan is `sscan` (the hint intentionally not
 applied — e.g. the hinted index cannot serve the WHERE clause), the caption
-or an adjacent comment must state that fallback contract explicitly ("hint
+or an adjacent comment should state that fallback contract explicitly ("hint
 cannot build a search key → sequential fallback is the intended behavior").
 An undocumented sscan expectation on a hinted query can silently mask a
 future hint-ignore regression — raise it (non-blocking) when the contract

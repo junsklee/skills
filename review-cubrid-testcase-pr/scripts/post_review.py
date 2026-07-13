@@ -79,6 +79,11 @@ def main():
         sys.stderr.write("payload preserved at %s\nmanual send: %s\n"
                          % (payload_path, curl_fallback(owner, repo, number, payload_path)))
         sys.exit(1)
+    except urllib.error.URLError as e:
+        sys.stderr.write("POST failed: %s\n" % e)
+        sys.stderr.write("payload preserved at %s\nmanual send: %s\n"
+                         % (payload_path, curl_fallback(owner, repo, number, payload_path)))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

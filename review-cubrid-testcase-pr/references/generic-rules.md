@@ -2,7 +2,7 @@
 
 Used when the PR touches CTP categories other than sql/medium/shell. The
 review still runs the core process (review-core.md), but the review MUST
-open with an explicit flag, in Korean, e.g.:
+include an explicit flag immediately after the verdict line, in Korean, e.g.:
 
 ```
 ⚠️ 이 PR 은 전용 리뷰 규칙이 없는 카테고리(<dirs>)를 포함합니다.

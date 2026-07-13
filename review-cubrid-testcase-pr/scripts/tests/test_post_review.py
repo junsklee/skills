@@ -24,5 +24,25 @@ class TestCurlFallback(unittest.TestCase):
         self.assertIn("$GITHUB_TOKEN", cmd)
 
 
+class TestYesPathNetworkErrors(unittest.TestCase):
+    def test_urlerror_preserves_payload_and_exits_nonzero(self):
+        import tempfile
+        import urllib.error
+        from unittest import mock
+        import post_review
+        with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as fh:
+            fh.write("리뷰 본문")
+            body = fh.name
+        argv = ["post_review.py", "CUBRID/cubrid-testcases#2956", "--body-file", body, "--yes"]
+        with mock.patch.object(sys, "argv", argv), \
+             mock.patch.dict(os.environ, {"GITHUB_TOKEN": "dummy"}), \
+             mock.patch.object(post_review.urllib.request, "urlopen",
+                               side_effect=urllib.error.URLError("dns fail")):
+            with self.assertRaises(SystemExit) as cm:
+                post_review.main()
+        self.assertNotEqual(cm.exception.code, 0)
+        self.assertTrue(os.path.exists(body + ".payload.json"))
+
+
 if __name__ == "__main__":
     unittest.main()
