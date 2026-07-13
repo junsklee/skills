@@ -88,6 +88,15 @@ def detect_categories(paths):
     return cats
 
 
+def safe_dest(files_dir, name):
+    """Resolve a repo-relative filename under files_dir, never outside it."""
+    clean = name.lstrip("/\\")
+    dest = os.path.normpath(os.path.join(files_dir, clean))
+    if not dest.startswith(files_dir + os.sep):
+        dest = os.path.join(files_dir, clean.replace("..", "__"))
+    return dest
+
+
 def gh_request(path, token, accept="application/vnd.github+json", raw=False):
     url = path if path.startswith("http") else API + path
     req = urllib.request.Request(url, headers={
@@ -165,9 +174,7 @@ def main():
         if f.get("status") == "removed":
             continue
         # repo paths are relative; refuse anything that would escape files_dir
-        dest = os.path.normpath(os.path.join(files_dir, name))
-        if not dest.startswith(files_dir + os.sep):
-            dest = os.path.join(files_dir, name.replace("..", "__"))
+        dest = safe_dest(files_dir, name)
         if total >= args.max_total_bytes:
             truncated.append({"path": name, "reason": "total-cap"})
             continue

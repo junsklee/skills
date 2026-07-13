@@ -3,7 +3,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from fetch_pr import parse_pr_url, extract_jira_key, detect_categories
+from fetch_pr import parse_pr_url, extract_jira_key, detect_categories, safe_dest
 
 
 class TestParsePrUrl(unittest.TestCase):
@@ -83,6 +83,23 @@ class TestDetectCategories(unittest.TestCase):
         cats = detect_categories(["isolation/_01_basic/cases/x.ctl", "README.md"])
         self.assertEqual(sorted(cats.keys()), ["other"])
         self.assertEqual(len(cats["other"]), 2)
+
+
+class TestSafeDest(unittest.TestCase):
+    def setUp(self):
+        self.base = os.path.abspath("/data/bundle/files")
+
+    def test_normal_relative_path(self):
+        self.assertEqual(safe_dest(self.base, "sql/cases/a.sql"),
+                         os.path.join(self.base, "sql", "cases", "a.sql"))
+
+    def test_dotdot_traversal_contained(self):
+        dest = safe_dest(self.base, "../../etc/passwd")
+        self.assertTrue(dest.startswith(self.base + os.sep))
+
+    def test_absolute_path_contained(self):
+        dest = safe_dest(self.base, "/etc/passwd")
+        self.assertTrue(dest.startswith(self.base + os.sep))
 
 
 if __name__ == "__main__":
