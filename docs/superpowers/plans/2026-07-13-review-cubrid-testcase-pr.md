@@ -1122,7 +1122,7 @@ acceptance criteria, repro, linked engine PR (`github.com/CUBRID/cubrid/pull/N`)
 
 ### 3. Engine-PR enrichment (optional)
 
-If an engine PR is linked, fetch its title + changed-file list (REST API,
+If an engine PR is linked, fetch its title + description + changed-file list (REST API,
 same `bash -lc` pattern) into `$work/engine_pr.md` — it tells the reviewer
 what engine code changed, to judge whether the TC exercises it.
 
