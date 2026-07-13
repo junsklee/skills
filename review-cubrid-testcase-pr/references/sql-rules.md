@@ -20,9 +20,11 @@ Violations of MUST items are `NEEDS FIX`.
 
 - Header block first: `/** This test case verifies CBRD-XXXXX: <title> */`
   plus a numbered `Coverage:` list that matches what the file actually tests.
-- `evaluate 'Case N: description'` before each scenario — the ONLY section
-  marker (no `-- ===` banners); numbered sequentially; captions must describe
-  the scenario truthfully.
+- `evaluate 'Case N: description'` before each scenario; numbered
+  sequentially; captions must describe the scenario truthfully. Extra
+  decorative comment banners (`-- === ... ===`) and alternate label wording
+  (e.g. `[Scenario N]`) are style-level: note them as non-blocking at most —
+  the merged corpus accepts them, and they never reach the `.answer`.
 - `DROP TABLE IF EXISTS t` before every `CREATE TABLE`; setup at top,
   cleanup at bottom.
 - **The whole suite shares ONE database.** The file must undo everything:
@@ -65,3 +67,11 @@ and negative plan expectations must be distinguishable, result correctness
 judged independently of plan correctness. Optimizer hints / forced indexes
 only where needed to stabilize or validate the target access path. Never
 approve a semantically wrong expected result because the plan looks right.
+
+When a hinted query's EXPECTED plan is `sscan` (the hint intentionally not
+applied — e.g. the hinted index cannot serve the WHERE clause), the caption
+or an adjacent comment must state that fallback contract explicitly ("hint
+cannot build a search key → sequential fallback is the intended behavior").
+An undocumented sscan expectation on a hinted query can silently mask a
+future hint-ignore regression — raise it (non-blocking) when the contract
+is not written down.

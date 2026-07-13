@@ -71,6 +71,18 @@ Entry script `{name}/cases/{name}.sh` — directory name and filename MUST match
 each excluded path preceded by a `#CBRD-XXXXX (reason)` comment; the path must
 exist in the tree; an exclusion without issue key + reason is NEEDS FIX.
 
+## Expected-count answer updates
+
+When a PR bumps hardcoded expected counts (daemon/thread/process counts,
+etc.) to track an intentional engine change (answer-fix type), verify with
+the engine PR what actually changed, then check the delta is applied to
+EVERY assertion whose filter would include the changed entity — across all
+files in the PR. Flag any sibling count that plausibly shares the delta but
+was left unbumped (e.g. a filtered subtotal like `Tran_index is null` when
+the new daemon would match that filter). Consistency across the whole
+package is the finding; a single correct bump proves nothing about the
+others.
+
 ## Failure classification vocabulary
 
 When judging what a failing run would mean, classify as: product defect /
