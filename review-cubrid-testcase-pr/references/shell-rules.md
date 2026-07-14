@@ -46,6 +46,15 @@ Entry script `{name}/cases/{name}.sh` — directory name and filename MUST match
 - No global service commands (`cubrid service stop` on shared instances)
   unless the issue itself requires them.
 
+## Script conventions (MUST)
+
+- Final statement is `finish`; NO trailing `exit 0` on the normal path.
+  `exit 0` appears only on a premature/early-exit branch (after its `finish`).
+- Header is a `:<< END … END` heredoc (unquoted `END`) with a one-line
+  summary only — no step-by-step specifics. Inline comments 1–2 lines, only
+  where useful; no comments on helper functions.
+- DB name contains `db`, formatted `db<issue_num>` (e.g. `db26893`).
+
 ## House idioms (expected by reviewers)
 
 - Default broker is `broker1` (not `query_editor`). Port:

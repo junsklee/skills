@@ -20,14 +20,15 @@ list), `crash_cas_patterns.md` (crash/CAS recipes), `directory_guide.md`
 
 ```bash
 #!/bin/bash
-# CBRD-XXXXX: one-line statement of what this verifies.
-# Setup -> action -> expected outcome, in 1-2 lines.
-# (platform macro BEFORE init.sh when needed: WINDOWS_NOT_SUPPORTED)
+:<< END
+CBRD-XXXXX: one-line summary of what this verifies (no specifics).
+END
 
+# (platform macro, if needed, BEFORE init.sh: e.g. WINDOWS_NOT_SUPPORTED)
 . $init_path/init.sh
 init test
 
-dbname=db_xxxxx
+dbname=db26893
 
 # --- Setup ---
 cubrid_createdb $dbname
@@ -49,17 +50,21 @@ finish
 ```
 
 - Every code path ends at exactly ONE of `write_ok`/`write_nok`, then
-  reaches `finish` LAST — including early-exit error branches.
+  reaches `finish` LAST — including early-exit error branches. The script's
+  final statement is `finish`; NEVER a trailing `exit 0` on the normal path.
+  Use `exit 0` only to end a premature/early-exit branch (right after its
+  `finish`).
 - Multi-scenario tests satisfy this per scenario: factor a
   `run_case "name" "sql" "expected"` helper that runs csql, extracts and
   whitespace-normalizes the value line, compares exact strings
   (`[ "$result" = "$expected" ]`), and emits ONE `write_ok`/`write_nok`
   per scenario — better failure granularity than a single aggregate flag.
 - Keep DB volume files out of the shared cwd: `mkdir "$dbname"; cd
-  "$dbname"; cubrid_createdb …` then `cd ..` and remove the dir in
-  cleanup. The repo also commonly heads scripts with a
-  `:<<'DESCRIPTION' … DESCRIPTION` block instead of `#` comments — either
-  is fine.
+  "$dbname"; cubrid_createdb …` then `cd ..` and remove the dir in cleanup.
+- Header block is a `:<< END … END` heredoc (unquoted `END`) holding a
+  one-line summary only — no step-by-step specifics. Inline comments are
+  1–2 lines, only where they add value; NO comments on helper functions.
+- DB name contains `db`, formatted `db<issue_num>` (e.g. `db26893`).
 - `finish` reverts conf changes, stops services, frees broker shared
   memory; a path that skips it poisons the next test.
 
