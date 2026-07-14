@@ -90,9 +90,11 @@ asking to open the PR for an existing branch.
    (not a setup/env failure masquerading as success); any script fixes from
    the NOK loop re-enter step 5–6 of Phase 1.
 2. **Gate re-run** if any file changed since the last gate.
-3. **Commit + PR gate.** Changed files: `push_package.py push … --update
+3. **Commit + PR gate.** On explicit user confirmation of the validated
+   run evidence and any changed files: `push_package.py push … --update
    --yes`. Then render the Korean PR body (two-phase-protocol.md PR
-   conventions, including the run evidence). On explicit confirmation:
+   conventions, including the run evidence). On a second explicit
+   confirmation:
    `push_package.py pr --upstream CUBRID/cubrid-testcases-private-ex
    --fork-owner junsklee --branch cbrd_NNNNN_tc --title "[CBRD-NNNNN] <english>"
    --body-file $work/pr_body.md --yes`.

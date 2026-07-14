@@ -87,10 +87,11 @@ Read `$COMMON/references/two-phase-protocol.md`, then:
    (answer-fix vs bug-report per review-core.md). Suspicious → show the
    user the concern; do not commit silently.
 2. **Gate re-run** over the complete package (sql + real answers).
-3. **Commit + PR gate.** `push_package.py push … --update --yes` (answers
-   only), then render the Korean PR body (per two-phase-protocol.md PR
-   conventions: `Refer to:` line 1, coverage summary, verification
-   evidence). On explicit confirmation:
+3. **Commit + PR gate.** On explicit user confirmation of the validated
+   answers: `push_package.py push … --update --yes` (answers only). Then
+   render the Korean PR body (per two-phase-protocol.md PR conventions:
+   `Refer to:` line 1, coverage summary, verification evidence). On a
+   second explicit confirmation:
    `push_package.py pr --upstream CUBRID/cubrid-testcases --fork-owner junsklee
    --branch cbrd_NNNNN_tc --title "[CBRD-NNNNN] <english>" --body-file $work/pr_body.md --yes`.
 
