@@ -147,9 +147,9 @@ echoed PASS/FAIL), `format_csql_output`/`format_query_plan`/
   unrelated log lines. Never destructive cleanup (`rm -rf`) on paths you
   did not create; no global service commands unless the issue requires
   them.
-- Inline comments 1–2 lines, only where they add value; NO comments on
-  helper functions. Optional `set -x` for tracing goes immediately after
-  `init test` (13/42 use it).
+- Inline comments 1–2 lines, only where they add value; helper functions
+  get at most one terse `#` purpose line above the definition. Optional
+  `set -x` for tracing goes immediately after `init test` (13/42 use it).
 - Teardown order before `finish`: [broker stop] → `cubrid server stop` →
   `cubrid deletedb` → `rm -f *.log *diff listdrv csql.*` (+`*.err` for
   compiled clients) → `rm -rf $db*`.

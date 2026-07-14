@@ -51,8 +51,8 @@ Entry script `{name}/cases/{name}.sh` — directory name and filename MUST match
 - Header is a `:<< END … END` heredoc (unquoted `END`) placed BEFORE the
   `#!/bin/bash` shebang, first line `This scenario verifies the following
   issue: CBRD-XXXXX`, then 1–3 summary lines (shebang is decorative — CTP
-  runs via `sh`/`bash`). Inline comments 1–2 lines, only where useful; no
-  comments on helper functions.
+  runs via `sh`/`bash`). Inline comments 1–2 lines, only where useful;
+  helpers get at most one terse `#` purpose line.
 - Final statement is `finish`; NO trailing `exit 0` on the normal path
   (0/67 corpus-wide). `exit 0` appears only on a premature/early-exit
   branch, after its `finish`.
