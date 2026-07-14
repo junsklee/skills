@@ -65,6 +65,19 @@ def get_branch_sha(owner, repo, branch, tok):
         raise
 
 
+def sync_fork_base(fork_owner, repo, base_ref, tok):
+    """Fast-forward the fork's base branch from upstream via merge-upstream."""
+    try:
+        out = gh_request("/repos/%s/%s/merge-upstream" % (fork_owner, repo), tok,
+                         data={"branch": base_ref})
+        return out.get("merge_type", "unknown")
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            sys.exit("fork %s/%s branch %s has diverged from upstream; sync it manually"
+                     % (fork_owner, repo, base_ref))
+        raise
+
+
 def curl_fallback(payload_path, endpoint):
     return ("curl -sS -X POST -H \"Authorization: Bearer $GITHUB_TOKEN\" "
             "-H \"Accept: application/vnd.github+json\" -d @%s %s%s"
@@ -104,6 +117,9 @@ def cmd_push(args):
         sys.exit("branch %s already exists on %s/%s; pass --update to add a commit"
                  % (args.branch, args.fork_owner, ur))
     if not args.yes:
+        if not branch_sha:
+            print("[dry-run] would sync fork %s/%s from upstream %s first"
+                  % (args.fork_owner, ur, args.base_ref))
         print("[dry-run] would %s branch %s on %s/%s (base %s @ %s)"
               % ("update" if branch_sha else "create", args.branch,
                  args.fork_owner, ur, args.base_ref, base_sha[:9]))
@@ -112,9 +128,14 @@ def cmd_push(args):
         print("[dry-run] commit message: %s" % args.message)
         return
     if not branch_sha:
+        sync_fork_base(args.fork_owner, ur, args.base_ref, tok)
+        fork_base_sha = get_branch_sha(args.fork_owner, ur, args.base_ref, tok)
+        if not fork_base_sha:
+            sys.exit("cannot resolve fork %s/%s branch %s after sync"
+                     % (args.fork_owner, ur, args.base_ref))
         gh_request("/repos/%s/%s/git/refs" % (args.fork_owner, ur), tok,
-                   data={"ref": "refs/heads/" + args.branch, "sha": base_sha})
-        head = base_sha
+                   data={"ref": "refs/heads/" + args.branch, "sha": fork_base_sha})
+        head = fork_base_sha
     else:
         head = branch_sha
     head_commit = gh_request("/repos/%s/%s/git/commits/%s"

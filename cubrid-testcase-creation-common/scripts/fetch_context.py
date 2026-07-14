@@ -47,6 +47,18 @@ def safe_dest(base_dir, name):
     return dest
 
 
+def subtree_sha(owner, repo, root_sha, prefix, tok):
+    """Descend from the root tree along prefix segments; return the subtree sha."""
+    sha = root_sha
+    for seg in [s for s in prefix.strip("/").split("/") if s]:
+        tree = gh_request("/repos/%s/%s/git/trees/%s" % (owner, repo, sha), tok)
+        match = [e for e in tree.get("tree", []) if e["path"] == seg and e["type"] == "tree"]
+        if not match:
+            sys.exit("prefix path not found in tree: %s (at segment %s)" % (prefix, seg))
+        sha = match[0]["sha"]
+    return sha
+
+
 def cmd_engine_pr(args):
     tok = token()
     owner, repo, num = parse_pr_ref(args.ref)
@@ -68,12 +80,21 @@ def cmd_tree(args):
     tok = token()
     owner, repo = parse_repo(args.repo)
     ref = gh_request("/repos/%s/%s/git/ref/heads/%s" % (owner, repo, args.ref), tok)
+    commit = gh_request("/repos/%s/%s/git/commits/%s"
+                        % (owner, repo, ref["object"]["sha"]), tok)
+    root_sha = commit["tree"]["sha"]
+    if args.prefix:
+        pre = args.prefix.rstrip("/") + "/"
+        list_sha = subtree_sha(owner, repo, root_sha, args.prefix, tok)
+    else:
+        pre = ""
+        list_sha = root_sha
     tree = gh_request("/repos/%s/%s/git/trees/%s?recursive=1"
-                      % (owner, repo, ref["object"]["sha"]), tok)
+                      % (owner, repo, list_sha), tok)
     if tree.get("truncated"):
         sys.stderr.write("warning: tree listing truncated by GitHub; results may be partial\n")
-    paths = [e["path"] for e in tree.get("tree", []) if e.get("type") == "blob"]
-    for p in filter_tree(paths, args.grep, args.prefix):
+    paths = [pre + e["path"] for e in tree.get("tree", []) if e.get("type") == "blob"]
+    for p in filter_tree(paths, args.grep, None):
         print(p)
 
 
