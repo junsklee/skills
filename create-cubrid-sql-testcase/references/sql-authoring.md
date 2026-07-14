@@ -61,8 +61,18 @@ self-review gate checks them with the reviewer doctrine afterwards.
   form, same predicate/expression shape, required `SET SYSTEM PARAMETERS`.
   A look-alike scenario that misses the code path is worthless.
 - Only what exercises the target issue — no unrelated setup, hints, or
-  padding cases. Cover: main success path, main failure/exclusion path,
-  boundaries, empty/no-match, NULL when relevant.
+  padding cases. But minimality never trims the issue's OWN variant
+  matrix; reviewers ask for broader coverage more than anything else:
+  - guard/limit fixes: boundary cases straddling the limit (N-1, N, N+1),
+    plus one case per shared-path variant (BEFORE/AFTER timing,
+    INSERT/UPDATE/DELETE event, statement type).
+  - function/operator fixes: the exact repro, an opposite-sign/positive
+    control, explicit optional-argument paths (e.g. round(x,0),
+    round(x,scale)), the typed variant (NUMERIC cast vs literal), and
+    boundary neighbours around the trigger value — each with an exact
+    expected value.
+  - always: main success path, main failure/exclusion path, empty/no-match,
+    NULL when relevant.
 - Proofread adapted/copied SQL for copy-paste artifacts: wrong
   object/user/variable names, stale JIRA numbers, unmatched parentheses,
   wrong argument counts.

@@ -50,6 +50,16 @@ finish
 
 - Every code path ends at exactly ONE of `write_ok`/`write_nok`, then
   reaches `finish` LAST — including early-exit error branches.
+- Multi-scenario tests satisfy this per scenario: factor a
+  `run_case "name" "sql" "expected"` helper that runs csql, extracts and
+  whitespace-normalizes the value line, compares exact strings
+  (`[ "$result" = "$expected" ]`), and emits ONE `write_ok`/`write_nok`
+  per scenario — better failure granularity than a single aggregate flag.
+- Keep DB volume files out of the shared cwd: `mkdir "$dbname"; cd
+  "$dbname"; cubrid_createdb …` then `cd ..` and remove the dir in
+  cleanup. The repo also commonly heads scripts with a
+  `:<<'DESCRIPTION' … DESCRIPTION` block instead of `#` comments — either
+  is fine.
 - `finish` reverts conf changes, stops services, frees broker shared
   memory; a path that skips it poisons the next test.
 
@@ -91,7 +101,12 @@ ok AND PID stable AND no new cores.
 - Reproduce the exact JIRA repro (mode matters: SA vs CS, csql vs broker
   client). If the issue is csql-only, drive csql; if it needs a driver,
   embed the CCI client.
-- Only what exercises the issue; no padding. Answer/inline-expected
-  comparisons must normalize volatile output first (`format_*` helpers).
+- Only what exercises the issue; no padding — but never trim the issue's
+  OWN variant matrix (broader coverage is the single most-requested review
+  change). For a function/operator bug: exact repro, opposite-sign control,
+  explicit optional-argument paths, typed variant, boundary neighbours —
+  each asserting an exact expected value, not just an error-absence
+  invariant. Answer/inline-expected comparisons must normalize volatile
+  output first (`format_*` helpers).
 - Environment failures (lib/permission/locale) must not be reportable as
   product regressions — guard and classify.
