@@ -17,6 +17,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ghlib import API, gh_request, parse_repo, token
@@ -50,6 +51,12 @@ def answers_empty(sizes):
                   if s == 0 and (p.endswith(".answer") or p.endswith(".answer_cci")))
 
 
+def answer_paths(filenames):
+    """Filter an iterable of repo paths to .answer/.answer_cci files, sorted."""
+    return sorted(p for p in filenames
+                  if p.endswith(".answer") or p.endswith(".answer_cci"))
+
+
 def build_pr_payload(title, body, fork_owner, branch, base_ref):
     return {"title": title, "body": body,
             "head": "%s:%s" % (fork_owner, branch), "base": base_ref}
@@ -75,6 +82,12 @@ def sync_fork_base(fork_owner, repo, base_ref, tok):
         if e.code == 409:
             sys.exit("fork %s/%s branch %s has diverged from upstream; sync it manually"
                      % (fork_owner, repo, base_ref))
+        if e.code == 404:
+            sys.exit("repo %s/%s is not a fork or has no branch %s — cannot merge-upstream"
+                     % (fork_owner, repo, base_ref))
+        if e.code == 422:
+            sys.exit("merge-upstream failed for %s/%s branch %s: HTTP 422\n%s"
+                     % (fork_owner, repo, base_ref, e.read().decode("utf-8", "replace")))
         raise
 
 
@@ -90,17 +103,35 @@ def cmd_status(args):
     base_sha = get_branch_sha(uo, ur, args.base_ref, tok)
     branch_sha = get_branch_sha(args.fork_owner, ur, args.branch, tok)
     empty = []
+    pkg_files = []
     if branch_sha:
-        tree = gh_request("/repos/%s/%s/git/trees/%s?recursive=1"
-                          % (args.fork_owner, ur, branch_sha), tok)
-        sizes = dict((e["path"], e.get("size", 0)) for e in tree.get("tree", [])
-                     if e.get("type") == "blob")
+        cmp = gh_request("/repos/%s/%s/compare/%s...%s"
+                         % (args.fork_owner, ur, args.base_ref, args.branch), tok)
+        pkg_files = [f["filename"] for f in cmp.get("files", [])]
+        sizes = {}
+        for p in answer_paths(pkg_files):
+            entry = gh_request("/repos/%s/%s/contents/%s?ref=%s"
+                               % (args.fork_owner, ur, urllib.parse.quote(p),
+                                  args.branch), tok)
+            sizes[p] = entry.get("size", 0)
         empty = answers_empty(sizes)
-    prs = gh_request("/repos/%s/%s/pulls?head=%s:%s&state=open"
+    prs = gh_request("/repos/%s/%s/pulls?head=%s:%s&state=all"
                      % (uo, ur, args.fork_owner, args.branch), tok)
+    pr, pr_state = None, None
+    if prs:
+        open_prs = [p for p in prs if p.get("state") == "open"]
+        chosen = open_prs[0] if open_prs else max(prs, key=lambda p: p.get("created_at", ""))
+        pr = chosen["number"]
+        if chosen.get("state") == "open":
+            pr_state = "open"
+        elif chosen.get("merged_at"):
+            pr_state = "merged"
+        else:
+            pr_state = "closed"
     print(json.dumps({"branch_exists": bool(branch_sha), "base_sha": base_sha,
                       "branch_sha": branch_sha, "empty_answers": empty,
-                      "pr": prs[0]["number"] if prs else None}, indent=2))
+                      "package_files": pkg_files,
+                      "pr": pr, "pr_state": pr_state}, indent=2))
 
 
 def cmd_push(args):
@@ -127,35 +158,56 @@ def cmd_push(args):
             print("[dry-run]   + %s (%d bytes)" % (rp, os.path.getsize(ap)))
         print("[dry-run] commit message: %s" % args.message)
         return
-    if not branch_sha:
-        sync_fork_base(args.fork_owner, ur, args.base_ref, tok)
-        fork_base_sha = get_branch_sha(args.fork_owner, ur, args.base_ref, tok)
-        if not fork_base_sha:
-            sys.exit("cannot resolve fork %s/%s branch %s after sync"
-                     % (args.fork_owner, ur, args.base_ref))
-        gh_request("/repos/%s/%s/git/refs" % (args.fork_owner, ur), tok,
-                   data={"ref": "refs/heads/" + args.branch, "sha": fork_base_sha})
-        head = fork_base_sha
-    else:
-        head = branch_sha
-    head_commit = gh_request("/repos/%s/%s/git/commits/%s"
-                             % (args.fork_owner, ur, head), tok)
-    entries = []
-    for rp, ap in files:
-        with open(ap, "rb") as fh:
-            content = fh.read()
-        blob = gh_request("/repos/%s/%s/git/blobs" % (args.fork_owner, ur), tok,
-                          data={"content": base64.b64encode(content).decode("ascii"),
-                                "encoding": "base64"})
-        entries.append({"path": rp, "mode": "100644", "type": "blob",
-                        "sha": blob["sha"]})
-    tree = gh_request("/repos/%s/%s/git/trees" % (args.fork_owner, ur), tok,
-                      data={"base_tree": head_commit["tree"]["sha"], "tree": entries})
-    commit = gh_request("/repos/%s/%s/git/commits" % (args.fork_owner, ur), tok,
-                        data={"message": args.message, "tree": tree["sha"],
-                              "parents": [head]})
-    gh_request("/repos/%s/%s/git/refs/heads/%s" % (args.fork_owner, ur, args.branch),
-               tok, method="PATCH", data={"sha": commit["sha"]})
+    branch_created_now = False
+    step = "sync fork"
+    try:
+        if not branch_sha:
+            step = "sync fork"
+            sync_fork_base(args.fork_owner, ur, args.base_ref, tok)
+            fork_base_sha = get_branch_sha(args.fork_owner, ur, args.base_ref, tok)
+            if not fork_base_sha:
+                sys.exit("cannot resolve fork %s/%s branch %s after sync"
+                         % (args.fork_owner, ur, args.base_ref))
+            step = "create branch"
+            gh_request("/repos/%s/%s/git/refs" % (args.fork_owner, ur), tok,
+                       data={"ref": "refs/heads/" + args.branch, "sha": fork_base_sha})
+            branch_created_now = True
+            head = fork_base_sha
+        else:
+            head = branch_sha
+        step = "resolve head commit"
+        head_commit = gh_request("/repos/%s/%s/git/commits/%s"
+                                 % (args.fork_owner, ur, head), tok)
+        entries = []
+        for rp, ap in files:
+            step = "upload blob %s" % rp
+            with open(ap, "rb") as fh:
+                content = fh.read()
+            blob = gh_request("/repos/%s/%s/git/blobs" % (args.fork_owner, ur), tok,
+                              data={"content": base64.b64encode(content).decode("ascii"),
+                                    "encoding": "base64"})
+            entries.append({"path": rp, "mode": "100644", "type": "blob",
+                            "sha": blob["sha"]})
+        step = "create tree"
+        tree = gh_request("/repos/%s/%s/git/trees" % (args.fork_owner, ur), tok,
+                          data={"base_tree": head_commit["tree"]["sha"], "tree": entries})
+        step = "create commit"
+        commit = gh_request("/repos/%s/%s/git/commits" % (args.fork_owner, ur), tok,
+                            data={"message": args.message, "tree": tree["sha"],
+                                  "parents": [head]})
+        step = "update ref"
+        gh_request("/repos/%s/%s/git/refs/heads/%s" % (args.fork_owner, ur, args.branch),
+                   tok, method="PATCH", data={"sha": commit["sha"]})
+    except urllib.error.HTTPError as e:
+        sys.stderr.write("push failed at step: %s\nHTTP %d\n%s\n"
+                         % (step, e.code, e.read().decode("utf-8", "replace")))
+        if branch_created_now:
+            sys.stderr.write(
+                "note: branch %s was created at base %s in this run before the "
+                "failure; a stub branch now exists at base — retry with --update "
+                "(or delete the branch) rather than re-running create.\n"
+                % (args.branch, args.base_ref))
+        sys.exit(1)
     print("pushed %d file(s) to %s/%s@%s (commit %s)"
           % (len(files), args.fork_owner, ur, args.branch, commit["sha"][:9]))
 

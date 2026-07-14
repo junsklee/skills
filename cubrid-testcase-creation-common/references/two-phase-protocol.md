@@ -15,6 +15,12 @@ Run `push_package.py status --upstream <repo> --fork-owner junsklee
 | true | empty list | null | Phase 2, step 3 (ready for PR) |
 | true | — | number | DONE — point the user at the PR; stop |
 
+Footnotes: `empty_answers` and `package_files` are computed from the
+branch-vs-base compare (package scope only). A `pr` with `pr_state`
+closed/merged also means DONE — never open a duplicate PR. Phase detection
+is advisory: sanity-check `package_files` against the expected package
+before acting.
+
 If the branch exists but the user asked for a fresh draft, offer:
 resume (phase 2) / overwrite (`push --update`, only with explicit consent) /
 abort. NEVER force-push or overwrite silently.

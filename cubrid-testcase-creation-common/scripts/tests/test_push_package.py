@@ -5,7 +5,8 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from push_package import answers_empty, branch_name, build_pr_payload, collect_package
+from push_package import (answer_paths, answers_empty, branch_name,
+                          build_pr_payload, collect_package)
 
 
 class TestBranchName(unittest.TestCase):
@@ -53,6 +54,15 @@ class TestAnswersEmpty(unittest.TestCase):
                  "a/cases/empty.queryPlan": 0}
         self.assertEqual(answers_empty(sizes),
                          ["a/answers/x.answer", "a/answers/x.answer_cci"])
+
+
+class TestAnswerPaths(unittest.TestCase):
+    def test_filters_and_sorts(self):
+        files = ["b/answers/x.answer", "a/cases/x.sql", "a/answers/y.answer_cci", "a/x.queryPlan"]
+        self.assertEqual(answer_paths(files), ["a/answers/y.answer_cci", "b/answers/x.answer"])
+
+    def test_empty_input(self):
+        self.assertEqual(answer_paths([]), [])
 
 
 class TestBuildPrPayload(unittest.TestCase):

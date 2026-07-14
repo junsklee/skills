@@ -31,7 +31,7 @@ dbname=db_xxxxx
 
 # --- Setup ---
 cubrid_createdb $dbname
-cubrid server start $dbname || { write_nok "server start failed"; finish; exit 0; }
+cubrid server start $dbname || { write_nok "server start failed"; cubrid deletedb $dbname; finish; exit 0; }
 
 # --- Test --- (SQL inline via single-quoted heredocs; capture to logs)
 csql -udba "$dbname" > result.log 2>&1 <<'EOF'
