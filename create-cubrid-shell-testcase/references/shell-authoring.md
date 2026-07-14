@@ -19,47 +19,61 @@ list), `crash_cas_patterns.md` (crash/CAS recipes), `directory_guide.md`
 ## Lifecycle skeleton (every entry script)
 
 ```bash
+:<< END
+This test case verifies CBRD-XXXXX: <one-line summary>.
+END
 #!/bin/bash
-# CBRD-XXXXX: one-line statement of what this verifies.
-# Setup -> action -> expected outcome, in 1-2 lines.
-# (platform macro BEFORE init.sh when needed: WINDOWS_NOT_SUPPORTED)
-
+# (platform macro, if needed, goes here after the shebang, BEFORE init.sh:
+#  e.g. WINDOWS_NOT_SUPPORTED)
 . $init_path/init.sh
 init test
 
-dbname=db_xxxxx
+dbname=db26893
 
-# --- Setup ---
-cubrid_createdb $dbname
+# --- Setup (DB in its own subdir so volume files stay out of cases/) ---
+rm -rf $dbname; mkdir $dbname; cd $dbname
+cubrid_createdb --db-volume-size=20M --log-volume-size=20M $dbname
+cd ..
 cubrid server start $dbname || { write_nok "server start failed"; cubrid deletedb $dbname; finish; exit 0; }
 
-# --- Test --- (SQL inline via single-quoted heredocs; capture to logs)
-csql -udba "$dbname" > result.log 2>&1 <<'EOF'
-CREATE TABLE t1 (id INT PRIMARY KEY);
-EOF
+# --- Test + per-scenario verdict (one write_ok/write_nok each, with a message) ---
+csql -udba "$dbname" -c "SELECT ...;" > case1.log 2>&1
+format_csql_output case1.log
+got=$(...); exp="..."
+if [ "$got" = "$exp" ]; then write_ok "case1"; else write_nok "case1: expected $exp got $got"; fi
 
-# --- Verify ---
-if [ <condition> ]; then write_ok; else write_nok result.log; fi
-
-# --- Cleanup (reverse order, on EVERY exit path) ---
+# --- Cleanup ---
 cubrid server stop $dbname
 cubrid deletedb $dbname
-rm -f *.log csql.*
+rm -rf $dbname *.log csql.*
 finish
 ```
 
 - Every code path ends at exactly ONE of `write_ok`/`write_nok`, then
-  reaches `finish` LAST — including early-exit error branches.
-- Multi-scenario tests satisfy this per scenario: factor a
-  `run_case "name" "sql" "expected"` helper that runs csql, extracts and
-  whitespace-normalizes the value line, compares exact strings
-  (`[ "$result" = "$expected" ]`), and emits ONE `write_ok`/`write_nok`
-  per scenario — better failure granularity than a single aggregate flag.
-- Keep DB volume files out of the shared cwd: `mkdir "$dbname"; cd
-  "$dbname"; cubrid_createdb …` then `cd ..` and remove the dir in
-  cleanup. The repo also commonly heads scripts with a
-  `:<<'DESCRIPTION' … DESCRIPTION` block instead of `#` comments — either
-  is fine.
+  reaches `finish` LAST — including early-exit error branches. The script's
+  final statement is `finish`; NEVER a trailing `exit 0` on the normal path.
+  Use `exit 0` only to end a premature/early-exit branch (right after its
+  `finish`).
+- Per-scenario verdict, NEVER an aggregate flag: each individual test emits
+  its OWN `write_ok`/`write_nok` directly — do not accumulate an
+  `is_error`/pass flag and branch once at the end. Multi-scenario tests
+  factor a `run_case "name" "sql" "expected"` (or `assert_*`) helper that
+  runs csql, `format_*`-normalizes the value line, compares exact strings,
+  and emits exactly one verdict per scenario.
+- Every verdict carries a descriptive message — `write_ok "case"`,
+  `write_nok "case: expected <X> got <Y>"` — never bare, so a CTP feedback
+  line alone tells you what failed.
+- Isolate the DB in its own subdir (repo norm): `rm -rf $dbname; mkdir
+  $dbname; cd $dbname; cubrid_createdb --db-volume-size=20M
+  --log-volume-size=20M $dbname; cd ..` — keeps volume files out of
+  `cases/`; remove the dir in cleanup (`rm -rf $dbname`).
+- Header is a `:<< END … END` heredoc (unquoted `END`) placed BEFORE the
+  shebang, opening `This test case verifies CBRD-XXXXX: <summary>`. The
+  `#!/bin/bash` shebang follows and is decorative — CTP runs the script via
+  `sh`/`bash`, so keep the body portable or rely on the harness's shell.
+  Keep the header to a summary; inline comments 1–2 lines, only where they
+  add value; NO comments on helper functions.
+- DB name contains `db`, formatted `db<issue_num>` (e.g. `db26893`).
 - `finish` reverts conf changes, stops services, frees broker shared
   memory; a path that skips it poisons the next test.
 

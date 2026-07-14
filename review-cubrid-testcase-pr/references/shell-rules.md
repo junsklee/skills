@@ -46,6 +46,24 @@ Entry script `{name}/cases/{name}.sh` — directory name and filename MUST match
 - No global service commands (`cubrid service stop` on shared instances)
   unless the issue itself requires them.
 
+## Script conventions (MUST)
+
+- Header is a `:<< END … END` heredoc (unquoted `END`) placed BEFORE the
+  `#!/bin/bash` shebang, opening `This test case verifies CBRD-XXXXX:
+  <summary>` (shebang is decorative — CTP runs via `sh`/`bash`). Keep it to
+  a summary; inline comments 1–2 lines, only where useful; no comments on
+  helper functions.
+- Final statement is `finish`; NO trailing `exit 0` on the normal path.
+  `exit 0` appears only on a premature/early-exit branch (after its `finish`).
+- Per-scenario verdict: each individual test emits its OWN `write_ok`/
+  `write_nok`, NEVER an aggregate `is_error`/pass flag branched once at the
+  end. Every verdict carries a descriptive message (`write_nok "case:
+  expected X got Y"`), not bare.
+- Isolate the DB in its own subdir (`rm -rf $db; mkdir $db; cd $db;
+  cubrid_createdb … $db; cd ..`; `rm -rf $db` in cleanup) so volume files
+  stay out of `cases/`.
+- DB name contains `db`, formatted `db<issue_num>` (e.g. `db26893`).
+
 ## House idioms (expected by reviewers)
 
 - Default broker is `broker1` (not `query_editor`). Port:
