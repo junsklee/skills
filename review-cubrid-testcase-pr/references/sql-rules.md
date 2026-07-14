@@ -31,6 +31,10 @@ Violations of MUST items are `NEEDS FIX`.
   drop every created table/view/serial/procedure, `deallocate prepare` every
   `prepare`, restore every `SET SYSTEM PARAMETERS` to its original value.
   Leaked state breaks later tests: blocking.
+- Proofread copied/adapted SQL for copy-paste artifacts — wrong object/user/
+  variable references, mismatched labels, stale JIRA numbers in the header
+  comment, unmatched parentheses, wrong function argument counts/types —
+  anything that would stop the test from exercising what it claims.
 
 ## Determinism (MUST)
 

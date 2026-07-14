@@ -21,6 +21,10 @@ runtime proof is delegated to a test machine via the verification footer.
 - `GITHUB_TOKEN` set (unexported) in `~/.bash_profile`. Wrap every script
   call in `bash -lc 'export GITHUB_TOKEN; …'`.
 - `cubrid-jira` CLI — optional enrichment; skip with a visible note if absent.
+- Mined reviewer rubric (optional empirical layer): dir
+  `$CUBRID_REVIEW_RUBRIC_DIR`, default `~/pr-review-mining/reviewer_rubric`.
+  If missing, note "mined rubric not found — baseline doctrine only" and
+  continue; the skill works standalone.
 
 Let `$SKILL` = this skill's directory and `$work` = a fresh scratchpad dir.
 
@@ -53,11 +57,27 @@ what engine code changed, to judge whether the TC exercises it.
 
 ### 4. Assemble doctrine by category
 
-From `bundle.json` `categories`:
-- always include `$SKILL/references/review-core.md`
+Normative layer, from `bundle.json` `categories`:
+- always include `$SKILL/references/review-core.md` and
+  `$SKILL/references/calibration-exclusions.md` (hard drop list — loaded
+  even when the rubric below is unavailable)
 - `sql` → add `$SKILL/references/sql-rules.md`
 - `shell` or `excluded_list` → add `$SKILL/references/shell-rules.md`
 - `other` → add `$SKILL/references/generic-rules.md`
+
+Empirical layer (mined rubric). Let `$RUBRIC` = `$CUBRID_REVIEW_RUBRIC_DIR`,
+default `~/pr-review-mining/reviewer_rubric`. If the dir does not exist,
+tell the user "mined rubric not found — baseline doctrine only" and skip
+this block:
+- always add `$RUBRIC/mined-rubric-overview.md` and
+  `$RUBRIC/mined-general-rules.md` (its Tier-1 rules are cross-category)
+- `sql` → add `$RUBRIC/mined-sql-rules.md`; `shell` or `excluded_list` →
+  add `$RUBRIC/mined-shell-rules.md`; a PR spanning categories loads every
+  matching mined doc (mirror the normative selection)
+- Token cap: from each mined category doc inject only the `## Tier 1` and
+  `## Tier 2` sections (cut at the `## Tier 3` heading) — Tier 3 is
+  watchlist-only; pass the full file PATH so the reviewer can consult it
+  on demand.
 
 ### 5. Spawn the reviewer subagent
 
@@ -70,10 +90,31 @@ the parent of `cases/`, e.g. `shell/_06_issues/_26_1h/cbrd_27000`; for
   merge findings, drop duplicates, overall verdict = worst individual verdict.
 
 Each subagent prompt must contain, in order: the full text of the selected
-reference files; the paths `$work/bundle/bundle.json`, `$work/bundle/files/`,
-`$work/bundle/pr.diff`, `$work/jira.md`, `$work/engine_pr.md` (when present);
-and the instruction: *"Read the bundle, apply the doctrine, and return ONLY
-the final review markdown in Korean per the Output contract — no preamble."*
+reference files (calibration-exclusions.md included); the mined-rubric
+sections per Step 4 (when available); the paths `$work/bundle/bundle.json`,
+`$work/bundle/files/`, `$work/bundle/pr.diff`, `$work/jira.md`,
+`$work/engine_pr.md` (when present); and the instruction: *"Read the bundle,
+apply the doctrine, and return ONLY the final review markdown in Korean per
+the Output contract — no preamble."*
+
+When the rubric is loaded, the prompt must also instruct the reviewer to:
+- treat the mined **Tier-1 themes as the must-check list** for the detected
+  category — one pass per applicable theme over the changed files; a
+  confirmed violation is a `NEEDS FIX` candidate. Tier 2 → non-blocking
+  suggestion only, never gates the verdict alone. Tier 3 → mention only when
+  the diff directly triggers it; never hunt for it.
+- **cite the mined theme** on every rubric-grounded finding and, where
+  useful, mirror the team's phrasing from the precedent quotes; use per-theme
+  PR/reviewer counts for prioritisation and tone, never as proof of a defect.
+- apply the **calibration drop (hard gate)**: before finalizing, delete any
+  candidate finding matching a `calibration-exclusions.md` entry, respecting
+  each entry's scope.
+- run the **self-skeptic pass** per review-core.md's Do-not-flag section:
+  default to NOT flagging under doubt.
+- **complement, don't duplicate, the live AI reviewers**: greptile already
+  covers plan/answer-regression and `.answer_cci` variant sync on these
+  repos; the bundle's existing reviews/comments show what it and humans
+  already raised — do not re-post those.
 
 Save the result to `$work/review.md`.
 

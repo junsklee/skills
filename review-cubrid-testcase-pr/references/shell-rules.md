@@ -39,6 +39,8 @@ Entry script `{name}/cases/{name}.sh` — directory name and filename MUST match
 - Every background PID tracked (`cmd & pid=$!`) with matching `wait`/`xkill`.
 - Error handling on fallible steps (`cubrid server start`, `csql`, compiles):
   `cmd || { write_nok "reason"; <cleanup>; finish; exit 0; }`.
+  (Calibrated exemption for setup/DB-creation commands — do not flag missing
+  fail-fast there; see `calibration-exclusions.md` entry 1.)
 - Exit codes AND observable behavior both checked where appropriate;
   assertions specific enough to avoid matching unrelated log lines.
 - No global service commands (`cubrid service stop` on shared instances)
