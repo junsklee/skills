@@ -48,7 +48,16 @@ three testcase repos, confirm intent with the user before continuing.
 
 If `jira_key` is set and `cubrid-jira` exists:
 `cubrid-jira search <KEY> > $work/jira.md`. Extract: expected behavior,
-acceptance criteria, repro, linked engine PR (`github.com/CUBRID/cubrid/pull/N`).
+acceptance criteria, repro.
+
+The engine PR is NOT in `jira.md` — `cubrid-jira search` does not render the
+JIRA "development / N pull requests" panel. Resolve it separately (auth is
+~/.netrc, machine jira.cubrid.org):
+  bash -lc "python3 $SKILL/scripts/get_engine_pr.py <KEY> > $work/engine_pr_links.txt"
+The engine PR = the `[engine]`-tagged line (URL under github.com/CUBRID/cubrid/
+AND title carries <KEY>). Ignore `[other-repo-pr]` lines (e.g. CUBVEC-* CI
+merges) and the testcase PR itself. Exit 2 = no engine PR linked; note it and
+continue (reduced-evidence, not a defect against the author).
 - `jira_key` null → continue; the missing `Refer to:` line is itself a finding.
 - CLI missing or issue restricted → continue; the review must open with a
   "JIRA 컨텍스트 없이 리뷰됨 — 정확도 제한" note.
