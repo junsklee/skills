@@ -361,3 +361,52 @@ class TestSuggestAnswerName(unittest.TestCase):
     def test_variable_multiple_uses_index(self):
         self.assertEqual(vt.suggest_answer_name("$db.answer", "cbrd_1", 2),
                          "cbrd_1_2.answer")
+
+
+class TestCommitPairResolution(unittest.TestCase):
+    def test_merged_pair(self):
+        self.assertEqual(vt.merged_pair("MERGE", "PARENT"), ("PARENT", "MERGE"))
+
+    def test_open_pair(self):
+        self.assertEqual(vt.open_pair("BASE", "HEAD"), ("BASE", "HEAD"))
+
+    def test_resolve_merged_pr_uses_first_parent_and_merge(self):
+        def fake_gh(path, tok):
+            if path.endswith("/pulls/7213"):
+                return {"merged_at": "2026-01-01T00:00:00Z", "merge_commit_sha": "MERGE",
+                        "base": {"ref": "develop"}, "head": {"sha": "HEAD"}}
+            if "/commits/MERGE" in path:
+                return {"parents": [{"sha": "PARENT"}, {"sha": "HEAD"}]}
+            raise AssertionError("unexpected " + path)
+        self.assertEqual(
+            vt.resolve_commit_pair("https://github.com/CUBRID/cubrid/pull/7213", "t", gh=fake_gh),
+            ("PARENT", "MERGE"))
+
+    def test_resolve_open_pr_uses_merge_base_and_head(self):
+        def fake_gh(path, tok):
+            if path.endswith("/pulls/42"):
+                return {"merged_at": None, "base": {"ref": "develop"}, "head": {"sha": "HEAD"}}
+            if "/compare/" in path:
+                return {"merge_base_commit": {"sha": "MB"}}
+            raise AssertionError("unexpected " + path)
+        self.assertEqual(vt.resolve_commit_pair("CUBRID/cubrid#42", "t", gh=fake_gh),
+                         ("MB", "HEAD"))
+
+    def test_resolve_issue_single_match(self):
+        def fake_gh(path, tok):
+            return {"items": [{"number": 55, "title": "[CBRD-26893] fix",
+                               "repository_url": "https://api.github.com/repos/CUBRID/cubrid"}]}
+        self.assertEqual(vt.resolve_issue_to_ref("CBRD-26893", "t", gh=fake_gh),
+                         "CUBRID/cubrid#55")
+
+    def test_resolve_issue_ambiguous_raises(self):
+        def fake_gh(path, tok):
+            return {"items": [
+                {"number": 1, "title": "a", "repository_url": ".../CUBRID/cubrid"},
+                {"number": 2, "title": "b", "repository_url": ".../CUBRID/cubrid"}]}
+        with self.assertRaises(btlib.BuilderTesterError):
+            vt.resolve_issue_to_ref("CBRD-26893", "t", gh=fake_gh)
+
+    def test_resolve_issue_none_raises(self):
+        with self.assertRaises(btlib.BuilderTesterError):
+            vt.resolve_issue_to_ref("CBRD-1", "t", gh=lambda p, t: {"items": []})

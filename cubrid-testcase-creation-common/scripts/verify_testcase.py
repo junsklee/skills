@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from btlib import (BuilderTesterError, bt_get_text, bt_request, builder_url,
@@ -304,6 +305,66 @@ def suggest_answer_name(answer_arg, entry_stem, n):
     if "$" not in answer_arg and answer_arg not in (".", ".."):
         return os.path.basename(answer_arg)
     return "%s.answer" % entry_stem if n == 1 else "%s_%d.answer" % (entry_stem, n)
+
+
+def merged_pair(merge_sha, first_parent_sha):
+    return (first_parent_sha, merge_sha)
+
+
+def open_pair(merge_base_sha, head_sha):
+    return (merge_base_sha, head_sha)
+
+
+def resolve_commit_pair(ref, tok, gh=None):
+    """Resolve an engine PR reference to (pre_fix_sha, post_fix_sha).
+    Merged PR: (merge commit's first parent, merge commit) — robust to squash
+    and true merges. Open PR: (merge-base against base branch, head)."""
+    gh = gh or gh_request
+    owner, repo, num = parse_pr_ref(ref)
+    pr = gh("/repos/%s/%s/pulls/%d" % (owner, repo, num), tok)
+    if pr.get("merged_at"):
+        merge_sha = pr.get("merge_commit_sha")
+        if not merge_sha:
+            raise BuilderTesterError("merged PR #%d has no merge_commit_sha" % num)
+        commit = gh("/repos/%s/%s/commits/%s" % (owner, repo, merge_sha), tok)
+        parents = commit.get("parents", [])
+        if not parents:
+            raise BuilderTesterError("merge commit %s has no parents" % merge_sha[:7])
+        return merged_pair(merge_sha, parents[0]["sha"])
+    base = pr["base"]["ref"]
+    head_sha = pr["head"]["sha"]
+    cmp = gh("/repos/%s/%s/compare/%s...%s" % (owner, repo, base, head_sha), tok)
+    mb = cmp.get("merge_base_commit", {}).get("sha")
+    if not mb:
+        raise BuilderTesterError("cannot resolve merge base for PR #%d" % num)
+    return open_pair(mb, head_sha)
+
+
+def resolve_issue_to_ref(issue_key, tok, gh=None):
+    """Find the single CUBRID/cubrid PR whose title contains the CBRD key.
+    Returns 'CUBRID/cubrid#N'; raises listing candidates on 0 or >1 matches."""
+    gh = gh or gh_request
+    q = "%s repo:CUBRID/cubrid in:title type:pr" % issue_key
+    res = gh("/search/issues?q=" + urllib.parse.quote(q), tok)
+    items = res.get("items", [])
+    if not items:
+        raise BuilderTesterError(
+            "no CUBRID/cubrid PR found with %s in the title; pass --engine-pr" % issue_key)
+    if len(items) > 1:
+        listing = "; ".join("#%d %s" % (it["number"], it.get("title", "")) for it in items)
+        raise BuilderTesterError(
+            "%d PRs match %s — pass --engine-pr to pick one: %s"
+            % (len(items), issue_key, listing))
+    return "CUBRID/cubrid#%d" % items[0]["number"]
+
+
+def commit_subject(owner, repo, sha, tok, gh=None):
+    gh = gh or gh_request
+    try:
+        c = gh("/repos/%s/%s/commits/%s" % (owner, repo, sha), tok)
+        return (c.get("commit", {}).get("message", "") or "").splitlines()[0]
+    except Exception:
+        return ""
 
 
 def main():
