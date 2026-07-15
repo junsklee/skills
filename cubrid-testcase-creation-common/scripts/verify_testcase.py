@@ -367,13 +367,333 @@ def commit_subject(owner, repo, sha, tok, gh=None):
         return ""
 
 
+def plan_commits(pre, post, engine_pair, post_only):
+    """Decide the commits list + (pre, post). engine_pair is a resolved
+    (pre, post) tuple or None; explicit pre/post override it."""
+    if engine_pair:
+        pre = pre or engine_pair[0]
+        post = post or engine_pair[1]
+    if post_only:
+        if not post:
+            raise ValueError("--post-only requires a post-fix commit (--post or --engine-pr/--issue)")
+        return ([post], None, post)
+    if not pre or not post:
+        raise ValueError("need a pre/post pair: pass --engine-pr/--issue REF or --pre SHA --post SHA")
+    return ([pre, post], pre, post)
+
+
+def elide_payload(req):
+    """A print-safe copy: large content fields shown as size + sha256."""
+    def mark(s):
+        b = s.encode("utf-8")
+        return "<%d bytes sha256:%s>" % (len(b), hashlib.sha256(b).hexdigest()[:12])
+    safe = dict(req)
+    safe["customShellScript"] = mark(req.get("customShellScript", ""))
+    if "customAttachments" in req:
+        safe["customAttachments"] = [
+            {"targetPath": a["targetPath"], "contentBase64": mark(a["contentBase64"])}
+            for a in req["customAttachments"]]
+    return safe
+
+
+def _engine_pair_and_owner(args):
+    """Resolve --engine-pr/--issue to ((pre,post) or None, owner, repo). Explicit
+    --pre/--post leave the pair None and default owner/repo to CUBRID/cubrid."""
+    ref = args.engine_pr
+    if getattr(args, "issue", None) and not ref:
+        ref = resolve_issue_to_ref(args.issue, token())
+        print("resolved %s -> %s" % (args.issue, ref))
+    if ref:
+        owner, repo, _num = parse_pr_ref(ref)
+        return (resolve_commit_pair(ref, token()), owner, repo)
+    return (None, "CUBRID", "cubrid")
+
+
+def _echo_pair(owner, repo, pre, post):
+    # Best-effort subjects: soft-read the token (never sys.exit here) so the
+    # --pre/--post path needs no GITHUB_TOKEN; commit_subject swallows errors.
+    tok = os.environ.get("GITHUB_TOKEN")
+    for label, sha in (("pre-fix", pre), ("post-fix", post)):
+        if sha:
+            subj = commit_subject(owner, repo, sha, tok) if tok else ""
+            print("  %-8s %s  %s" % (label, sha[:9], subj))
+
+
+def _resolve_and_echo(args):
+    pair, owner, repo = _engine_pair_and_owner(args)
+    try:
+        commits, pre, post = plan_commits(
+            getattr(args, "pre", None), getattr(args, "post", None),
+            pair, getattr(args, "post_only", False))
+    except ValueError as e:
+        sys.exit(str(e))
+    print("Commit pair to build:")
+    _echo_pair(owner, repo, pre, post)
+    return commits, pre, post
+
+
+def _load_script(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _post_build(req):
+    print("Submitting to %s (consumes shared builder/tester capacity)..." % builder_url())
+    return parse_submit_response(bt_request("/api/builder/build", method="POST", data=req))
+
+
+def _submit(script_text, entry_abs, commits, args, yes):
+    case_dir = os.path.dirname(os.path.abspath(entry_abs))
+    atts = collect_attachments(case_dir, entry_abs)
+    req = build_request(script_text, commits, worker_ips(), attachments=atts,
+                        run_mode=args.run_mode, min_runs=args.min_runs,
+                        max_runs=args.max_runs, build_type=args.build_type)
+    if not yes:
+        print("[dry-run] POST %s/api/builder/build" % builder_url())
+        print(json.dumps(elide_payload(req), indent=2))
+        print("[dry-run] pass --yes to submit")
+        return None
+    task_id = _post_build(req)
+    print("taskId: %s" % task_id)
+    return task_id
+
+
+def _fetch_report(task_id):
+    data = bt_request("/api/reports?q=%s&pageSize=50" % task_id)
+    rep = locate_report(data.get("items", []), task_id)
+    if rep is not None:
+        return rep
+    data = bt_request("/api/reports?pageSize=100")
+    return locate_report(data.get("items", []), task_id)
+
+
+def _pending(task_id):
+    """True if task_id is currently queued or actively building."""
+    try:
+        st = bt_request("/api/builder/status")
+    except BuilderTesterError:
+        return False
+    if task_id in st.get("queuedTaskIds", []):
+        return True
+    return any(t.get("taskId") == task_id for t in st.get("activeTasks", []))
+
+
+def _wait(task_id, timeout):
+    """Block until the report for task_id lands. Returns the report dict, or
+    raises BuilderTesterError on timeout / finished-without-report."""
+    print("Waiting for %s (timeout %ds)..." % (task_id, timeout))
+    deadline = time.time() + timeout
+    delay = 10
+    while time.time() < deadline:
+        st = bt_request("/api/builder/status?taskId=%s" % task_id)
+        phase = status_phase(st)
+        if phase == "error":
+            raise BuilderTesterError("builder reported error for %s" % task_id)
+        if phase == "running":
+            print("  ... running %s" % (st.get("progressSummary") or st.get("progress") or ""))
+        else:  # not_found: queued, finished, or absent
+            rep = _fetch_report(task_id)
+            if rep is not None:
+                return rep
+            if not _pending(task_id):
+                raise BuilderTesterError(
+                    "%s is neither building, queued, nor reported — it finished "
+                    "without a report or never started; inspect the dashboard" % task_id)
+            print("  ... queued (waiting for the build slot)")
+        time.sleep(delay)
+        delay = min(delay + 5, 30)
+    raise BuilderTesterError(
+        "timed out after %ds waiting for %s (still queued/running)" % (timeout, task_id))
+
+
+_EXIT = {"VERIFIED": 0, "NOT-VERIFIED": 2, "FLAKY": 3, "INCONCLUSIVE": 4}
+
+
+def _print_and_exit(judged, task_id):
+    print(format_verdict_block(judged, task_id))
+    sys.exit(_EXIT.get(judged["verdict"], 1))
+
+
+def cmd_submit(args):
+    commits, _pre, _post = _resolve_and_echo(args)
+    _submit(_load_script(args.script), args.script, commits, args, args.yes)
+
+
+def cmd_wait(args):
+    _wait(args.task_id, args.timeout)
+    print("report available for %s" % args.task_id)
+
+
+def cmd_judge(args):
+    _commits, pre, post = _resolve_and_echo(args)
+    report = _fetch_report(args.task_id)
+    if report is None:
+        _print_and_exit(inconclusive("no report found for %s" % args.task_id, pre, post),
+                        args.task_id)
+    _print_and_exit(judge_matrix(results_by_commit(report), pre, post, args.special_case),
+                    args.task_id)
+
+
+def cmd_run(args):
+    commits, pre, post = _resolve_and_echo(args)
+    task_id = _submit(_load_script(args.script), args.script, commits, args, args.yes)
+    if task_id is None:
+        return  # dry-run
+    try:
+        report = _wait(task_id, args.timeout)
+    except BuilderTesterError as e:
+        _print_and_exit(inconclusive(str(e), pre, post), task_id)
+    _print_and_exit(judge_matrix(results_by_commit(report), pre, post, args.special_case),
+                    task_id)
+
+
+def _derive_meta(report, post_sha):
+    """Pick the post-fix results entry's first attempt log, guarding structure."""
+    results = report.get("results") or []
+    entry = next((r for r in results if (r.get("commit") or "").startswith(post_sha[:7])
+                  or post_sha.startswith((r.get("commit") or "x")[:7])), None)
+    entry = entry or (results[0] if results else None)
+    if not entry:
+        return None
+    for a in entry.get("attemptLogMetadata", []):
+        if a.get("logFileName"):
+            return a["logFileName"]
+    return None
+
+
+def cmd_derive_answer(args):
+    entry_abs = os.path.abspath(args.script)
+    script_text = _load_script(args.script)
+    if not has_compare_calls(script_text):
+        sys.exit("no compare_result_between_files call found; nothing to derive")
+    capture, mappings = capture_transform(script_text)
+    if not mappings:
+        sys.exit("compare_result_between_files present but no line matched the expected "
+                 "'compare_result_between_files <log> <answer>' form; check the script")
+    pair, owner, repo = _engine_pair_and_owner(args)
+    post = args.post or (pair[1] if pair else None)
+    if not post:
+        sys.exit("need a post-fix commit: pass --post SHA or --engine-pr/--issue REF")
+    print("Deriving answers from post-fix build:")
+    _echo_pair(owner, repo, None, post)
+    if not args.yes:
+        print("[dry-run] would submit the capture variant (post-only) to derive %d answer(s)"
+              % len(mappings))
+        print(capture)
+        print("[dry-run] pass --yes to submit")
+        return
+    case_dir = os.path.dirname(entry_abs)
+    atts = collect_attachments(case_dir, entry_abs)
+    req = build_request(capture, [post], worker_ips(), attachments=atts,
+                        run_mode="fixed-runs", min_runs=1, max_runs=1,
+                        build_type=args.build_type)
+    task_id = _post_build(req)
+    print("taskId: %s" % task_id)
+    report = _wait(task_id, args.timeout)
+    log_name = _derive_meta(report, post)
+    if not log_name:
+        sys.exit("post-fix run produced no attempt log for %s; cannot derive "
+                 "(the build may have failed) — inspect report %s" % (post[:7], task_id))
+    log = bt_get_text("/api/log/%s/tests/%s" % (task_id, log_name))
+    answers = extract_answers(log, mappings)
+    if not answers:
+        sys.exit("no answer payload found in the post-fix run log; inspect %s" % task_id)
+    entry_stem = os.path.splitext(os.path.basename(entry_abs))[0]
+    for n, produced, answer_arg in mappings:
+        if n not in answers:
+            print("WARNING: no captured content for compare #%d (%s)" % (n, produced))
+            continue
+        dest = os.path.join(case_dir, suggest_answer_name(answer_arg, entry_stem, n))
+        with open(dest, "wb") as fh:
+            fh.write(answers[n])
+        print("\n=== derived answer #%d -> %s (%d bytes) ===" % (n, dest, len(answers[n])))
+        sys.stdout.buffer.write(answers[n])
+        print("\n=== end answer #%d ===" % n)
+    print("\nREVIEW REQUIRED: confirm each derived .answer matches the JIRA to-be "
+          "behavior before using it. It was machine-derived from a real run.")
+
+
+def cmd_health(args):
+    ok = False
+    for ep in ("/health", "/api/builder/health", "/api/reports?pageSize=1"):
+        try:
+            print("%s -> %s" % (ep, json.dumps(bt_request(ep))[:200]))
+            ok = True
+        except BuilderTesterError as e:
+            print("%s -> UNREACHABLE: %s" % (ep, e))
+    if not ok:
+        sys.exit(1)
+
+
+def _add_commit_args(p):
+    p.add_argument("--engine-pr", help="engine PR ref (URL or OWNER/REPO#N)")
+    p.add_argument("--issue", help="CBRD-XXXXX; resolves to its CUBRID/cubrid PR")
+    p.add_argument("--pre", help="explicit pre-fix commit sha")
+    p.add_argument("--post", help="explicit post-fix commit sha")
+    p.add_argument("--post-only", action="store_true",
+                   help="submit only the post-fix commit")
+
+
+def _add_run_args(p):
+    p.add_argument("--run-mode", default="fixed-runs")
+    p.add_argument("--min-runs", type=int, default=2)
+    p.add_argument("--max-runs", type=int, default=2)
+    p.add_argument("--build-type", default="debug")
+    p.add_argument("--special-case", default=None,
+                   choices=["core-dump", "flaky-repro", "feature"],
+                   help="waive the pre-fix-must-fail expectation")
+    p.add_argument("--timeout", type=int, default=10800)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_subparsers(dest="cmd")
-    ap.parse_args()
-    ap.print_help()
-    sys.exit(2)
+    sub = ap.add_subparsers(dest="cmd")
+
+    ps = sub.add_parser("submit")
+    ps.add_argument("--script", required=True)
+    _add_commit_args(ps)
+    _add_run_args(ps)
+    ps.add_argument("--yes", action="store_true")
+
+    pw = sub.add_parser("wait")
+    pw.add_argument("--task-id", required=True)
+    pw.add_argument("--timeout", type=int, default=10800)
+
+    pj = sub.add_parser("judge")
+    pj.add_argument("--task-id", required=True)
+    _add_commit_args(pj)
+    pj.add_argument("--special-case", default=None,
+                    choices=["core-dump", "flaky-repro", "feature"])
+
+    prn = sub.add_parser("run")
+    prn.add_argument("--script", required=True)
+    _add_commit_args(prn)
+    _add_run_args(prn)
+    prn.add_argument("--yes", action="store_true")
+
+    pd = sub.add_parser("derive-answer")
+    pd.add_argument("--script", required=True)
+    pd.add_argument("--engine-pr")
+    pd.add_argument("--issue")
+    pd.add_argument("--post")
+    pd.add_argument("--build-type", default="debug")
+    pd.add_argument("--timeout", type=int, default=10800)
+    pd.add_argument("--yes", action="store_true")
+
+    sub.add_parser("health")
+
+    args = ap.parse_args()
+    try:
+        handler = {"submit": cmd_submit, "wait": cmd_wait, "judge": cmd_judge,
+                   "run": cmd_run, "derive-answer": cmd_derive_answer,
+                   "health": cmd_health}.get(args.cmd)
+        if handler is None:
+            ap.print_help()
+            sys.exit(2)
+        handler(args)
+    except BuilderTesterError as e:
+        sys.exit("Builder-Tester unavailable: %s" % e)
 
 
 if __name__ == "__main__":

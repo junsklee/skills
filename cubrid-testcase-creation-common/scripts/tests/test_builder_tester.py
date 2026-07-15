@@ -410,3 +410,74 @@ class TestCommitPairResolution(unittest.TestCase):
     def test_resolve_issue_none_raises(self):
         with self.assertRaises(btlib.BuilderTesterError):
             vt.resolve_issue_to_ref("CBRD-1", "t", gh=lambda p, t: {"items": []})
+
+
+class TestPlanCommits(unittest.TestCase):
+    def test_post_only_from_pair(self):
+        self.assertEqual(vt.plan_commits(None, None, ("PRE", "POST"), True),
+                         (["POST"], None, "POST"))
+
+    def test_explicit_pair(self):
+        self.assertEqual(vt.plan_commits("PRE", "POST", None, False),
+                         (["PRE", "POST"], "PRE", "POST"))
+
+    def test_pair_from_engine(self):
+        self.assertEqual(vt.plan_commits(None, None, ("PRE", "POST"), False),
+                         (["PRE", "POST"], "PRE", "POST"))
+
+    def test_explicit_overrides_engine(self):
+        self.assertEqual(vt.plan_commits("X", "Y", ("PRE", "POST"), False),
+                         (["X", "Y"], "X", "Y"))
+
+    def test_post_only_needs_post(self):
+        with self.assertRaises(ValueError):
+            vt.plan_commits(None, None, None, True)
+
+    def test_missing_pair_raises(self):
+        with self.assertRaises(ValueError):
+            vt.plan_commits("PRE", None, None, False)
+
+
+class TestElidePayload(unittest.TestCase):
+    def test_elides_script_and_attachments_with_sha256(self):
+        req = vt.build_request("abc", ["a"], ["h:1"],
+                               attachments=[{"targetPath": "x.c", "contentBase64": "eA=="}],
+                               callback_url="http://c/callback")
+        e = vt.elide_payload(req)
+        self.assertIn("sha256:", e["customShellScript"])
+        self.assertNotEqual(e["customShellScript"], "abc")
+        self.assertIn("sha256:", e["customAttachments"][0]["contentBase64"])
+        self.assertEqual(e["customAttachments"][0]["targetPath"], "x.c")
+        self.assertEqual(e["commits"], ["a"])  # non-elided fields preserved
+
+
+class TestCliDryRun(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.cases = os.path.join(self.d, "shell", "cbrd_1", "cases")
+        os.makedirs(self.cases)
+        self.entry = os.path.join(self.cases, "cbrd_1.sh")
+        with open(self.entry, "w") as fh:
+            fh.write("#!/bin/bash\nfinish\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def test_submit_dry_run_prints_payload_without_network(self):
+        env = dict(os.environ)
+        env["BUILDER_TESTER_URL"] = "http://127.0.0.1:1"  # unreachable on purpose
+        vt_path = os.path.join(os.path.dirname(__file__), "..", "verify_testcase.py")
+        out = subprocess.run(
+            [sys.executable, vt_path, "submit", "--script", self.entry,
+             "--pre", "AAA", "--post", "BBB"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+        text = out.stdout.decode("utf-8")
+        self.assertEqual(out.returncode, 0, text)
+        self.assertIn("[dry-run]", text)
+        self.assertIn("AAA", text)
+        self.assertIn("BBB", text)
+        self.assertIn("customShellScript", text)
+
+
+if __name__ == "__main__":
+    unittest.main()
