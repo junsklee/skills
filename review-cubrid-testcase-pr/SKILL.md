@@ -29,8 +29,10 @@ runtime proof is delegated to a test machine via the verification footer.
 Let `$SKILL` = this skill's directory and `$work` = a fresh scratchpad dir.
 
 - `$COMMON` = `$SKILL/../cubrid-testcase-creation-common` — shared scripts
-  (`fetch_context.py`, `verify_testcase.py`). Present only when the creation
-  suite is installed; the optional verification step below needs it.
+  (`fetch_context.py`, `verify_testcase.py`, `get_engine_pr.py`). A sibling of
+  this skill in the repo, so normally present. If absent (skill installed
+  without the creation suite), step 2 engine-PR discovery and the optional
+  verification step are skipped with a reduced-evidence note.
 
 ## Steps
 
@@ -53,7 +55,7 @@ acceptance criteria, repro.
 The engine PR is NOT in `jira.md` — `cubrid-jira search` does not render the
 JIRA "development / N pull requests" panel. Resolve it separately (auth is
 ~/.netrc, machine jira.cubrid.org):
-  bash -lc "python3 $SKILL/scripts/get_engine_pr.py <KEY> > $work/engine_pr_links.txt"
+  bash -lc "python3 $COMMON/scripts/get_engine_pr.py <KEY> > $work/engine_pr_links.txt"
 The engine PR = the `[engine]`-tagged line (URL under github.com/CUBRID/cubrid/
 AND title carries <KEY>). Ignore `[other-repo-pr]` lines (e.g. CUBVEC-* CI
 merges) and the testcase PR itself. Exit 2 = no engine PR linked; note it and
