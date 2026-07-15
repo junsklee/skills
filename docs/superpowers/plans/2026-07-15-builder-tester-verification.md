@@ -745,12 +745,14 @@ def format_verdict_block(judged, task_id):
     for label, logs in (("pre-fix", judged["pre_logs"]), ("post-fix", judged["post_logs"])):
         for fn in logs:
             out.append("  log %s: %s/api/log/%s/tests/%s" % (label, base, task_id, fn))
-    if judged["verdict"] == "VERIFIED" and judged["pre_sha"] and judged["post_sha"]:
+    pre_reproduced = "fail" in judged["pre_attempts"]
+    if judged["verdict"] == "VERIFIED" and judged["pre_sha"] and pre_reproduced:
         out.append("  Verified: pre-fix %s -> NOK / post-fix %s -> OK"
                    % (judged["pre_sha"][:7], judged["post_sha"][:7]))
     elif judged["verdict"] == "VERIFIED" and judged["post_sha"]:
-        out.append("  Verified: post-fix %s -> OK (pre-fix waived)"
-                   % judged["post_sha"][:7])
+        waiver = judged["special_case"] or "post-only"
+        out.append("  Verified: post-fix %s -> OK (pre-fix waived: %s)"
+                   % (judged["post_sha"][:7], waiver))
     return "\n".join(out)
 
 
