@@ -1344,8 +1344,14 @@ def _wait(task_id, timeout):
     deadline = time.time() + timeout
     delay = 10
     while time.time() < deadline:
-        st = bt_request("/api/builder/status?taskId=%s" % task_id)
-        phase = status_phase(st)
+        try:
+            st = bt_request("/api/builder/status?taskId=%s" % task_id)
+            phase = status_phase(st)
+        except BuilderTesterError:
+            # A blip on the per-task status endpoint must not abort the wait:
+            # fall through to the report/pending check, whose source of truth is
+            # /api/reports (which may well be up).
+            st, phase = {}, "not_found"
         if phase == "error":
             raise BuilderTesterError("builder reported error for %s" % task_id)
         if phase == "running":
