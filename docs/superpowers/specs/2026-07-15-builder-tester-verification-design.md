@@ -41,13 +41,16 @@ Endpoints used:
 Request fields used (custom-script mode, `BuilderTask.java`):
 
 - `commits: [<sha>, …]` — each commit is built and the test run against it.
-- `customShellScript` — the entry-script content. Makes `tests[]` optional.
-- `customScriptTestPath` — **required by the API** (the run's dir/name are
-  derived from it) but semantically inert for us: shell tests are not
-  location-dependent. `verify_testcase.py` auto-fills it from the staged
-  package path, falling back to
-  `shell/_06_issues/_verify/<name>/cases/<name>.sh`. Never a user-facing
-  knob.
+- `customShellScript` — the entry-script content. When present and `tests[]`
+  is omitted, the Builder injects the placeholder `tests: ["custom_script_test"]`
+  itself ([Builder.java:780](.)).
+- `customScriptTestPath` — **not sent.** Confirmed against source: the
+  injected `custom_script_test` placeholder runs in a temp dir
+  ([BuilderTask.java:1783-1793](.)) and does not consult
+  `customScriptTestPath`; the field is only read when a caller supplies its
+  own non-placeholder test path. Shell tests are location-independent (user-
+  confirmed), so `verify_testcase.py` omits it entirely — one less field to
+  keep correct, no auto-fill, no placement coupling.
 - `customAttachments: [{targetPath, contentBase64}]` — strictly relative
   paths, placed next to the script. Carries every non-entry file in the
   staging package (`.c`/`.java` clients, helper scripts, data files,
@@ -243,11 +246,12 @@ standard once evidence exists (already encouraged there).
 ## 10. Testing
 
 - **Unit** (pure, no network; alongside the existing 18 in
-  `scripts/tests/`): request assembly (fields, attachment encoding,
-  auto-filled `customScriptTestPath`), verdict matrix (all §5 cells incl.
-  flaky and special-case waivers), capture transform (single and multiple
-  compare calls, no-op when none), sentinel extraction/decode, commit-pair
-  resolution (merged/open/ambiguous — GitHub responses mocked).
+  `scripts/tests/`): request assembly (fields present, no `tests`/
+  `customScriptTestPath`, attachment encoding + strict targetPath rejection),
+  verdict matrix (all §5 cells incl. flaky and special-case waivers), capture
+  transform (single and multiple compare calls, no-op when none), sentinel
+  extraction/decode, commit-pair resolution (merged/open/ambiguous — GitHub
+  responses mocked), `_resolve_commits`/`_elide_payload` branching.
 - **Live read-only integration** (safe anytime): `/health`,
   `/api/builder/health`, `/api/reports` parse, one attempt-log fetch.
 - **End-to-end calibration** (requires user confirmation — spends builder
