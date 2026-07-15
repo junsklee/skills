@@ -145,3 +145,122 @@ class TestParseSubmitResponse(unittest.TestCase):
     def test_missing_taskid_raises(self):
         with self.assertRaises(btlib.BuilderTesterError):
             vt.parse_submit_response({"status": "accepted"})
+
+
+class TestResultsByCommit(unittest.TestCase):
+    REPORT = {"results": [
+        {"commit": "PRE", "status": "fail",
+         "attemptLogMetadata": [{"attempt": 1, "status": "fail", "logFileName": "pre1.log"},
+                                {"attempt": 2, "status": "fail", "logFileName": "pre2.log"}]},
+        {"commit": "POST", "status": "pass",
+         "attemptLogMetadata": [{"attempt": 1, "status": "pass", "logFileName": "post1.log"},
+                                {"attempt": 2, "status": "pass", "logFileName": "post2.log"}]},
+    ]}
+
+    def test_groups_attempts_and_logs_by_commit(self):
+        by = vt.results_by_commit(self.REPORT)
+        self.assertEqual(by["PRE"]["attempts"], ["fail", "fail"])
+        self.assertEqual(by["POST"]["logs"], ["post1.log", "post2.log"])
+
+    def test_falls_back_to_top_level_status(self):
+        by = vt.results_by_commit({"results": [{"commit": "X", "status": "pass"}]})
+        self.assertEqual(by["X"]["attempts"], ["pass"])
+        self.assertEqual(by["X"]["logs"], [])
+
+
+class TestLocateReport(unittest.TestCase):
+    def test_finds_by_id(self):
+        self.assertEqual(vt.locate_report([{"id": "a"}, {"id": "req_9"}], "req_9"),
+                         {"id": "req_9"})
+
+    def test_missing_returns_none(self):
+        self.assertIsNone(vt.locate_report([{"id": "a"}], "req_9"))
+
+
+class TestJudgeMatrix(unittest.TestCase):
+    def by(self, pre, post):
+        d = {}
+        if pre is not None:
+            d["PRE"] = {"attempts": pre, "logs": []}
+        if post is not None:
+            d["POST"] = {"attempts": post, "logs": []}
+        return d
+
+    def test_verified(self):
+        self.assertEqual(vt.judge_matrix(self.by(["fail", "fail"], ["pass", "pass"]),
+                                         "PRE", "POST")["verdict"], "VERIFIED")
+
+    def test_verified_with_short_sha_prefix_lookup(self):
+        by = {"aaaaaaaaaaaa": {"attempts": ["fail"], "logs": []},
+              "bbbbbbbbbbbb": {"attempts": ["pass", "pass"], "logs": []}}
+        self.assertEqual(vt.judge_matrix(by, "aaaaaaa", "bbbbbbb")["verdict"], "VERIFIED")
+
+    def test_not_verified_when_prefix_passes(self):
+        self.assertEqual(vt.judge_matrix(self.by(["pass", "pass"], ["pass", "pass"]),
+                                         "PRE", "POST")["verdict"], "NOT-VERIFIED")
+
+    def test_not_verified_when_postfix_fails(self):
+        self.assertEqual(vt.judge_matrix(self.by(["fail", "fail"], ["fail", "fail"]),
+                                         "PRE", "POST")["verdict"], "NOT-VERIFIED")
+
+    def test_flaky_when_postfix_mixed(self):
+        self.assertEqual(vt.judge_matrix(self.by(["fail", "fail"], ["pass", "fail"]),
+                                         "PRE", "POST")["verdict"], "FLAKY")
+
+    def test_inconclusive_when_no_postfix_result(self):
+        self.assertEqual(vt.judge_matrix(self.by(["fail"], None), "PRE", "POST")["verdict"],
+                         "INCONCLUSIVE")
+
+    def test_inconclusive_when_postfix_infra_error(self):
+        self.assertEqual(vt.judge_matrix(self.by(["fail"], ["error"]), "PRE", "POST")["verdict"],
+                         "INCONCLUSIVE")
+
+    def test_special_case_waives_prefix_pass(self):
+        j = vt.judge_matrix(self.by(["pass", "pass"], ["pass", "pass"]),
+                            "PRE", "POST", special_case="core-dump")
+        self.assertEqual(j["verdict"], "VERIFIED")
+        self.assertIn("waived", j["reason"])
+
+    def test_post_only_waives_prefix(self):
+        j = vt.judge_matrix(self.by(None, ["pass", "pass"]), None, "POST")
+        self.assertEqual(j["verdict"], "VERIFIED")
+        self.assertIn("post-only", j["reason"])
+
+
+class TestStatusPhase(unittest.TestCase):
+    def test_running(self):
+        for s in ("running", "queued", "accepted", "already_running"):
+            self.assertEqual(vt.status_phase({"status": s}), "running")
+
+    def test_not_found_is_its_own_phase(self):
+        self.assertEqual(vt.status_phase({"status": "not_found"}), "not_found")
+
+    def test_error(self):
+        self.assertEqual(vt.status_phase({"status": "error"}), "error")
+
+    def test_progress_negative_one_is_error(self):
+        self.assertEqual(vt.status_phase({"status": "running", "progress": -1}), "error")
+
+
+class TestFormatVerdictBlock(unittest.TestCase):
+    def test_includes_verdict_log_urls_and_verified_line(self):
+        os.environ.pop("BUILDER_TESTER_URL", None)
+        judged = {"verdict": "VERIFIED", "reason": "ok",
+                  "pre_sha": "aaaaaaabbb", "post_sha": "cccccccddd",
+                  "pre_attempts": ["fail"], "post_attempts": ["pass", "pass"],
+                  "pre_logs": ["pre1.log"], "post_logs": ["post1.log", "post2.log"],
+                  "special_case": None}
+        out = vt.format_verdict_block(judged, "req_x")
+        self.assertIn("VERDICT: VERIFIED", out)
+        self.assertIn("/api/log/req_x/tests/post1.log", out)
+        self.assertIn("Verified: pre-fix aaaaaaa", out)
+        self.assertIn("NOK", out)
+        self.assertIn("OK", out)
+
+
+class TestInconclusive(unittest.TestCase):
+    def test_shape(self):
+        j = vt.inconclusive("builder unreachable", "PRE", "POST")
+        self.assertEqual(j["verdict"], "INCONCLUSIVE")
+        self.assertEqual(j["pre_attempts"], [])
+        self.assertEqual(j["post_logs"], [])

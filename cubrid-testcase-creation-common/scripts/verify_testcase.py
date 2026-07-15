@@ -94,6 +94,150 @@ def parse_submit_response(resp):
     return task_id
 
 
+_KNOWN_STATUS = ("pass", "fail")
+
+
+def locate_report(items, task_id):
+    for it in items:
+        if it.get("id") == task_id:
+            return it
+    return None
+
+
+def results_by_commit(report):
+    """commit sha -> {'attempts': [status,...], 'logs': [logFileName,...]}."""
+    out = {}
+    for r in report.get("results", []):
+        commit = r.get("commit")
+        if not commit:
+            continue
+        meta = r.get("attemptLogMetadata", [])
+        attempts = [a.get("status") for a in meta if a.get("status")]
+        logs = [a.get("logFileName") for a in meta if a.get("logFileName")]
+        if not attempts and r.get("status"):
+            attempts = [r.get("status")]
+        entry = out.setdefault(commit, {"attempts": [], "logs": []})
+        entry["attempts"].extend(attempts)
+        entry["logs"].extend(logs)
+    return out
+
+
+def _lookup(by_commit, sha):
+    """Exact match, else unique prefix match (allows short --pre/--post shas)."""
+    if sha in by_commit:
+        return by_commit[sha]
+    hits = [v for k, v in by_commit.items() if k.startswith(sha) or sha.startswith(k)]
+    return hits[0] if len(hits) == 1 else {}
+
+
+def _all_pass(attempts):
+    return bool(attempts) and all(a == "pass" for a in attempts)
+
+
+def _has_infra(attempts):
+    return any(a not in _KNOWN_STATUS for a in attempts)
+
+
+def _mixed(attempts):
+    return ("pass" in attempts) and any(a != "pass" for a in attempts)
+
+
+def judge_matrix(by_commit, pre_sha, post_sha, special_case=None):
+    post_e = _lookup(by_commit, post_sha) if post_sha else {}
+    pre_e = _lookup(by_commit, pre_sha) if pre_sha else {}
+    post, pre = post_e.get("attempts", []), pre_e.get("attempts", [])
+    j = {"verdict": None, "reason": "", "pre_sha": pre_sha, "post_sha": post_sha,
+         "pre_attempts": pre, "post_attempts": post,
+         "pre_logs": pre_e.get("logs", []), "post_logs": post_e.get("logs", []),
+         "special_case": special_case}
+
+    if not post:
+        j["verdict"] = "INCONCLUSIVE"
+        j["reason"] = "no post-fix result for %s" % (post_sha or "?")[:7]
+        return j
+    if _has_infra(post):
+        j["verdict"] = "INCONCLUSIVE"
+        j["reason"] = "post-fix build/infra error (non pass/fail attempt status)"
+        return j
+    if _mixed(post):
+        j["verdict"] = "FLAKY"
+        j["reason"] = "post-fix build produced mixed pass/fail attempts"
+        return j
+    if not _all_pass(post):
+        j["verdict"] = "NOT-VERIFIED"
+        j["reason"] = "post-fix build did not pass all attempts"
+        return j
+
+    if pre_sha is None:
+        j["verdict"] = "VERIFIED"
+        j["reason"] = "pre-fix expectation waived: post-only run"
+        return j
+    if not pre or _has_infra(pre):
+        if special_case:
+            j["verdict"] = "VERIFIED"
+            j["reason"] = "pre-fix expectation waived: %s" % special_case
+        else:
+            j["verdict"] = "INCONCLUSIVE"
+            j["reason"] = "no clean pre-fix result for %s" % pre_sha[:7]
+        return j
+    if not _all_pass(pre):
+        j["verdict"] = "VERIFIED"
+        j["reason"] = "pre-fix reproduced the bug (>=1 attempt failed); post-fix all pass"
+        return j
+    if special_case:
+        j["verdict"] = "VERIFIED"
+        j["reason"] = "pre-fix expectation waived: %s (pre-fix did not fail)" % special_case
+    else:
+        j["verdict"] = "NOT-VERIFIED"
+        j["reason"] = "pre-fix build passed; test does not reproduce the bug"
+    return j
+
+
+def inconclusive(reason, pre_sha, post_sha):
+    return {"verdict": "INCONCLUSIVE", "reason": reason,
+            "pre_sha": pre_sha, "post_sha": post_sha,
+            "pre_attempts": [], "post_attempts": [],
+            "pre_logs": [], "post_logs": [], "special_case": None}
+
+
+def format_verdict_block(judged, task_id):
+    base = builder_url()
+
+    def line(label, sha, attempts, expect):
+        if sha is None:
+            return "  %-9s (skipped): expected %s" % (label, expect)
+        got = ", ".join("attempt %d %s" % (i + 1, s)
+                        for i, s in enumerate(attempts)) or "no result"
+        return "  %-9s %s: %s   (expected %s)" % (label, sha[:7], got, expect)
+
+    out = ["VERDICT: %s" % judged["verdict"],
+           "  %s" % judged["reason"],
+           line("pre-fix", judged["pre_sha"], judged["pre_attempts"],
+                "fail" if not judged["special_case"] else "fail (waived)"),
+           line("post-fix", judged["post_sha"], judged["post_attempts"], "pass")]
+    for label, logs in (("pre-fix", judged["pre_logs"]), ("post-fix", judged["post_logs"])):
+        for fn in logs:
+            out.append("  log %s: %s/api/log/%s/tests/%s" % (label, base, task_id, fn))
+    if judged["verdict"] == "VERIFIED" and judged["pre_sha"] and judged["post_sha"]:
+        out.append("  Verified: pre-fix %s -> NOK / post-fix %s -> OK"
+                   % (judged["pre_sha"][:7], judged["post_sha"][:7]))
+    elif judged["verdict"] == "VERIFIED" and judged["post_sha"]:
+        out.append("  Verified: post-fix %s -> OK (pre-fix waived)"
+                   % judged["post_sha"][:7])
+    return "\n".join(out)
+
+
+def status_phase(status_resp):
+    if status_resp.get("progress") == -1:
+        return "error"
+    s = status_resp.get("status")
+    if s == "not_found":
+        return "not_found"
+    if s == "error":
+        return "error"
+    return "running"
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
