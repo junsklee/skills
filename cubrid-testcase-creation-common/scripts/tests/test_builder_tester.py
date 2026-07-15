@@ -257,6 +257,24 @@ class TestFormatVerdictBlock(unittest.TestCase):
         self.assertIn("NOK", out)
         self.assertIn("OK", out)
 
+    def test_special_case_waived_line_not_nok(self):
+        judged = {"verdict": "VERIFIED", "reason": "waived",
+                  "pre_sha": "aaaaaaabbb", "post_sha": "cccccccddd",
+                  "pre_attempts": ["pass", "pass"], "post_attempts": ["pass"],
+                  "pre_logs": [], "post_logs": [], "special_case": "core-dump"}
+        out = vt.format_verdict_block(judged, "req_x")
+        self.assertNotIn("-> NOK", out)
+        self.assertIn("pre-fix waived: core-dump", out)
+
+    def test_post_only_waived_line(self):
+        judged = {"verdict": "VERIFIED", "reason": "post-only",
+                  "pre_sha": None, "post_sha": "cccccccddd",
+                  "pre_attempts": [], "post_attempts": ["pass", "pass"],
+                  "pre_logs": [], "post_logs": [], "special_case": None}
+        out = vt.format_verdict_block(judged, "req_x")
+        self.assertIn("pre-fix waived: post-only", out)
+        self.assertNotIn("-> NOK", out)
+
 
 class TestInconclusive(unittest.TestCase):
     def test_shape(self):
