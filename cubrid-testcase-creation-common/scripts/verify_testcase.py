@@ -468,11 +468,15 @@ def _fetch_report(task_id):
 
 
 def _pending(task_id):
-    """True if task_id is currently queued or actively building."""
+    """True if task_id is currently queued or actively building. If the
+    all-tasks status endpoint cannot be reached, assume the task is STILL
+    pending (conservative): a transient blip must never be read as 'finished
+    without a report'. A persistently-down endpoint then times out honestly
+    in _wait rather than raising a false completion."""
     try:
         st = bt_request("/api/builder/status")
     except BuilderTesterError:
-        return False
+        return True
     if task_id in st.get("queuedTaskIds", []):
         return True
     return any(t.get("taskId") == task_id for t in st.get("activeTasks", []))

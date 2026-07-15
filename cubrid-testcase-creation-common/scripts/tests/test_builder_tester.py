@@ -479,5 +479,31 @@ class TestCliDryRun(unittest.TestCase):
         self.assertIn("customShellScript", text)
 
 
+class TestPending(unittest.TestCase):
+    def setUp(self):
+        self._orig = vt.bt_request
+
+    def tearDown(self):
+        vt.bt_request = self._orig
+
+    def test_queued_is_pending(self):
+        vt.bt_request = lambda path, **k: {"queuedTaskIds": ["req_9"], "activeTasks": []}
+        self.assertTrue(vt._pending("req_9"))
+
+    def test_active_is_pending(self):
+        vt.bt_request = lambda path, **k: {"queuedTaskIds": [], "activeTasks": [{"taskId": "req_9"}]}
+        self.assertTrue(vt._pending("req_9"))
+
+    def test_absent_is_not_pending(self):
+        vt.bt_request = lambda path, **k: {"queuedTaskIds": [], "activeTasks": []}
+        self.assertFalse(vt._pending("req_9"))
+
+    def test_unreachable_endpoint_assumed_pending(self):
+        def boom(path, **k):
+            raise vt.BuilderTesterError("blip")
+        vt.bt_request = boom
+        self.assertTrue(vt._pending("req_9"))
+
+
 if __name__ == "__main__":
     unittest.main()
