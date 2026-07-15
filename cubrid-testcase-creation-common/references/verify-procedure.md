@@ -6,6 +6,12 @@ Dual use: (a) the runbook the skills execute locally when
 test machine otherwise. NEVER run any of this on the QAHome development
 host.
 
+> For shell cases, prefer remote Builder-Tester verification
+> (`builder-tester-verification.md`) — it needs no local CTP install and
+> proves pre-fix NOK / post-fix OK directly. Use the local runbook below only
+> when the Builder-Tester gateway is unreachable and
+> `CUBRID_TC_ALLOW_LOCAL_CTP=1` is set.
+
 ## Preconditions
 
 - CTP at `$CTP_HOME` (env → `~/CTP` → `~/cubrid-testtools/CTP`). Sanity:
