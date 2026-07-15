@@ -15,6 +15,10 @@ Local CTP/csql/cubrid execution is allowed ONLY when
 including always on the QAHome development host — this skill is static-only
 and uses the verify handoff. `.answer` content is NEVER written by hand.
 
+Note: remote Builder-Tester verification (create-cubrid-shell-testcase) does
+not apply here — its executor runs shell cases only. SQL answer generation
+uses the local CTP path or the printed verify handoff.
+
 ## Path resolution
 
 - `$SKILL` = this skill's real directory (resolve the symlink).

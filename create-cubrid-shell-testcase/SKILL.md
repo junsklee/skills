@@ -20,8 +20,12 @@ and uses the verify handoff. Shell `.sh` drafting is static authoring;
 
 - `$SKILL` = this skill's real directory (resolve the symlink).
 - `$COMMON` = `$SKILL/../cubrid-testcase-creation-common` — scripts
-  (`fetch_context.py`, `push_package.py`) and references
-  (`two-phase-protocol.md`, `verify-procedure.md`). Missing → STOP.
+  (`fetch_context.py`, `push_package.py`, `verify_testcase.py`) and references
+  (`two-phase-protocol.md`, `verify-procedure.md`,
+  `builder-tester-verification.md`). Missing → STOP.
+- `$BT` = `$BUILDER_TESTER_URL` or `http://192.168.2.154:8091` — remote
+  build+run verification gateway. Unreachable → skip remote verification and
+  fall through the ladder (step 7).
 - `$REVIEWER` = `~/.claude/skills/review-cubrid-testcase-pr` (resolved).
   Its `references/` are the self-review gate. Missing → STOP (gate is core).
 - `$RUBRIC` = `$CUBRID_REVIEW_RUBRIC_DIR` or `~/pr-review-mining/reviewer_rubric`;
@@ -74,12 +78,37 @@ the PR for an existing branch.
    KB topic doc, and reviews `$work/package/` as if it were a PR bundle
    (Korean output, verdict line first). `NEEDS FIX` → drafter fixes →
    re-review; max 2 loops, then surface findings to the user.
-7. **Local run (only if `CUBRID_TC_ALLOW_LOCAL_CTP=1`).** Follow
-   `$COMMON/references/verify-procedure.md` (shell section): run the case,
-   expect `OK` in `.result`; on NOK diagnose before pushing; re-run the
-   gate once if the script changed.
+7. **Runtime verification (before the push gate).** Read
+   `$COMMON/references/builder-tester-verification.md`, then take the first
+   reachable rung:
+   a. **Remote Builder-Tester** — `python3 $COMMON/scripts/verify_testcase.py
+      health` responds. If the draft uses `compare_result_between_files` with
+      no checked-in answer, first derive it:
+      `verify_testcase.py derive-answer --script <entry.sh>
+      --engine-pr <ref>` (dry-run, then `--yes` on confirmation) and get the
+      printed answer approved by the user before continuing. Then verify:
+      `verify_testcase.py run --script <entry.sh> --engine-pr <ref>`
+      (dry-run first; `--yes` after announcing it consumes shared builder
+      capacity). Helper/answer files next to the `.sh` are attached
+      automatically — no `--package`. Fold the printed verdict block into the
+      render (step 8) and the eventual PR body. VERIFIED → proceed.
+      NOT-VERIFIED/FLAKY → diagnose and fix (re-enter steps 5–6); do not push a
+      test that fails to reproduce or is flaky. INCONCLUSIVE → treat as a
+      builder/env issue, report it, fall to rung b/c. A genuine special case
+      (crash that will not reproduce in Docker, probabilistic repro, feature
+      test) uses `--special-case core-dump|flaky-repro|feature` with a stated
+      justification.
+   b. **Local CTP** — only if `CUBRID_TC_ALLOW_LOCAL_CTP=1`: follow
+      `$COMMON/references/verify-procedure.md` (shell section); expect `OK` in
+      `.result`; on NOK diagnose before pushing; re-run the gate once if the
+      script changed.
+   c. **Printed handoff** — neither reachable: print the verify handoff from
+      `two-phase-protocol.md` and continue static-only (Phase 2 resumes with
+      evidence).
 8. **Render + push gate.** Show the package, placement rationale, coverage
-   map, KB checklist satisfaction, `bash -n` results. On explicit user
+   map, KB checklist satisfaction, `bash -n` results, and — when remote
+   verification ran — the `verify_testcase.py` verdict block (pre-fix NOK /
+   post-fix OK) as first-class evidence. On explicit user
    confirmation: `push_package.py push --upstream CUBRID/cubrid-testcases-private-ex
    --fork-owner junsklee --branch cbrd_NNNNN_tc --package-dir $work/package
    --message "[CBRD-NNNNN] Add shell test case" --yes` (dry-run first, show
