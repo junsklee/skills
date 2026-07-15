@@ -296,7 +296,7 @@ class TestCaptureTransform(unittest.TestCase):
         self.assertIn("base64 a.log", new)
         self.assertIn('echo "ANSWER_END_1"', new)
         self.assertNotIn("compare_result_between_files", new)
-        self.assertIn("    echo", new)  # indentation preserved
+        self.assertIn('    { echo "ANSWER_BEGIN_1"', new)  # indentation preserved
 
     def test_tolerates_trailing_arg_and_if_guard(self):
         src = ("if ! compare_result_between_files x.log x.answer sort; then\n"
@@ -304,6 +304,9 @@ class TestCaptureTransform(unittest.TestCase):
         new, mapping = vt.capture_transform(src)
         self.assertEqual(mapping, [(1, "x.log", "x.answer")])
         self.assertIn("base64 x.log", new)
+        self.assertIn("if ! {", new)
+        self.assertIn("; then", new)
+        self.assertNotIn("compare_result_between_files", new)
 
     def test_multiple_calls_numbered(self):
         src = ("compare_result_between_files x.log x.answer\n"

@@ -240,11 +240,13 @@ def status_phase(status_resp):
     return "running"
 
 
-# Matches `compare_result_between_files <a1> <a2>` optionally preceded by an
-# `if`/`while`/`!` guard token, capturing the first two arguments.
+# Matches a `compare_result_between_files <produced> <answer> [norm...]` command
+# anywhere on a line (bare or inside an `if`/`while`/`!` guard), capturing the
+# first two args and swallowing any trailing normalization args up to a shell
+# separator, so only the command span is replaced.
 _COMPARE_RE = re.compile(
-    r"^(?P<indent>\s*)(?:(?:if|while)\s+)?(?:!\s+)?"
-    r"compare_result_between_files\s+(?P<a1>\S+)\s+(?P<a2>[^\s;&|]+)")
+    r"compare_result_between_files[ \t]+(?P<a1>[^\s;&|]+)[ \t]+"
+    r"(?P<a2>[^\s;&|]+)(?P<rest>[^\n;&|]*)")
 _B64_LINE_RE = re.compile(r"^[A-Za-z0-9+/=]+$")
 
 
@@ -254,24 +256,22 @@ def has_compare_calls(script_text):
 
 def capture_transform(script_text):
     """Replace each `compare_result_between_files <produced> <answer> [norm]`
-    call with a sentinel base64 dump of its first (produced-log) argument.
-    Returns (new_text, mappings=[(n, produced_arg, answer_arg), ...])."""
-    lines = script_text.splitlines()
-    out, mappings, n = [], [], 0
-    for ln in lines:
-        m = _COMPARE_RE.match(ln)
-        if m:
-            n += 1
-            produced, answer, indent = m.group("a1"), m.group("a2"), m.group("indent")
-            mappings.append((n, produced, answer))
-            out.append('%secho "ANSWER_BEGIN_%d"; base64 %s; echo "ANSWER_END_%d"'
-                       % (indent, n, produced, n))
-        else:
-            out.append(ln)
-    text = "\n".join(out)
-    if script_text.endswith("\n"):
-        text += "\n"
-    return text, mappings
+    command with a `{ echo SENTINEL; base64 <produced>; echo SENTINEL; }`
+    compound that dumps the first (produced-log) argument. The brace group
+    keeps surrounding control flow valid (e.g. `if ! <call>; then` becomes
+    `if ! { ... }; then`) and always exits 0. Returns (new_text,
+    mappings=[(n, produced_arg, answer_arg), ...])."""
+    mappings = []
+    counter = [0]
+
+    def repl(m):
+        counter[0] += 1
+        n = counter[0]
+        mappings.append((n, m.group("a1"), m.group("a2")))
+        return ('{ echo "ANSWER_BEGIN_%d"; base64 %s; echo "ANSWER_END_%d"; }'
+                % (n, m.group("a1"), n))
+
+    return _COMPARE_RE.sub(repl, script_text), mappings
 
 
 def extract_answers(log_text, mappings):
