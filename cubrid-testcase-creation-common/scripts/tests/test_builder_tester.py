@@ -505,5 +505,26 @@ class TestPending(unittest.TestCase):
         self.assertTrue(vt._pending("req_9"))
 
 
+class TestWaitResilientToStatusBlip(unittest.TestCase):
+    def setUp(self):
+        self._req = vt.bt_request
+
+    def tearDown(self):
+        vt.bt_request = self._req
+
+    def test_status_poll_error_falls_through_to_report(self):
+        def fake(path, **k):
+            if "status?taskId=" in path:
+                raise vt.BuilderTesterError("blip")
+            if path.startswith("/api/reports"):
+                return {"items": [{"id": "req_9", "results": [
+                    {"commit": "POST", "status": "pass",
+                     "attemptLogMetadata": [
+                         {"attempt": 1, "status": "pass", "logFileName": "p.log"}]}]}]}
+            raise AssertionError("unexpected " + path)
+        vt.bt_request = fake
+        self.assertEqual(vt._wait("req_9", 60)["id"], "req_9")
+
+
 if __name__ == "__main__":
     unittest.main()
