@@ -46,23 +46,38 @@ Entry script `{name}/cases/{name}.sh` — directory name and filename MUST match
 - No global service commands (`cubrid service stop` on shared instances)
   unless the issue itself requires them.
 
-## Script conventions (MUST)
+## Script conventions (MUST — mined from the house corpus, n=67)
 
 - Header is a `:<< END … END` heredoc (unquoted `END`) placed BEFORE the
-  `#!/bin/bash` shebang, opening `This test case verifies CBRD-XXXXX:
-  <summary>` (shebang is decorative — CTP runs via `sh`/`bash`). Keep it to
-  a summary; inline comments 1–2 lines, only where useful; no comments on
-  helper functions.
-- Final statement is `finish`; NO trailing `exit 0` on the normal path.
-  `exit 0` appears only on a premature/early-exit branch (after its `finish`).
-- Per-scenario verdict: each individual test emits its OWN `write_ok`/
-  `write_nok`, NEVER an aggregate `is_error`/pass flag branched once at the
-  end. Every verdict carries a descriptive message (`write_nok "case:
-  expected X got Y"`), not bare.
-- Isolate the DB in its own subdir (`rm -rf $db; mkdir $db; cd $db;
-  cubrid_createdb … $db; cd ..`; `rm -rf $db` in cleanup) so volume files
-  stay out of `cases/`.
-- DB name contains `db`, formatted `db<issue_num>` (e.g. `db26893`).
+  `#!/bin/bash` shebang, first line `This scenario verifies the following
+  issue: CBRD-XXXXX`, then 1–3 summary lines (shebang is decorative — CTP
+  runs via `sh`/`bash`). Inline comments 1–2 lines, only where useful;
+  helpers get at most one terse `#` purpose line.
+- Final statement is `finish`; NO trailing `exit 0` on the normal path
+  (0/67 corpus-wide). `exit 0` appears only on a premature/early-exit
+  branch, after its `finish`.
+- **1:1 paired verdict per individual test**: `if <cond>; then write_ok
+  ["Test N: … passed"]; else write_nok "Test N: … failed"|<logfile>; fi` —
+  and the script CONTINUES to the next test after a NOK. An aggregate
+  `is_error`/fail flag spanning different test cases is NEEDS FIX (0/42
+  house scripts); a fail-counter INSIDE one repeated-reproduction loop is
+  acceptable. `compare_result_between_files log answer` is an equally valid
+  delegated verdict. Never `set -e`; never hand-rolled PASS/FAIL echoes.
+- `write_nok` must carry a diagnostic (message naming the failed
+  expectation, or a logfile argument). Bare `write_ok` is acceptable; a
+  pass message is preferred. Optional evidence append:
+  `cat <log> >> $result_file` in the fail branch.
+- Early exit is legitimate ONLY for setup/infra/precondition failures
+  (createdb, server start, compile) — `write_nok "<reason>"` → teardown →
+  `finish` → `exit 0`. A skipped/inapplicable environment reports
+  `write_ok` (+ reason) then finish+exit, never NOK.
+- Isolate the DB in its own subdir (`cubrid deletedb $db; rm -rf $db;
+  mkdir $db; cd $db; cubrid_createdb … $db; cd ..`; `rm -rf $db` in
+  cleanup); DB name formatted `db<issue_num>` (e.g. `db26893`). Server
+  started only for client/server tests (`csql -S` otherwise); broker only
+  for driver/CAS paths.
+- Teardown order: [broker stop] → server stop → deletedb →
+  `rm -f *.log *diff listdrv csql.*` → `rm -rf $db*` → `finish`.
 
 ## House idioms (expected by reviewers)
 

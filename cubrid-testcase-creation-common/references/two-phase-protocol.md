@@ -33,6 +33,14 @@ empty answers + printed verify handoff. On the QAHome development host the
 flag must never be set (production CUBRID lives there); the deployment
 machine sets it deliberately.
 
+Shell cases have a third option that needs no CTP host and no fork branch:
+remote Builder-Tester verification via `verify_testcase.py` (see
+`builder-tester-verification.md`). When the gateway is reachable it runs
+before the push gate and collapses the handoff — the verdict block becomes the
+run evidence carried into the PR body. Order of preference for shell:
+remote Builder-Tester → local CTP (`CUBRID_TC_ALLOW_LOCAL_CTP=1`) → printed
+handoff. SQL cases have no remote option (the executor is shell-only).
+
 ## Confirmation gates (both are hard gates)
 
 1. **Push gate** — nothing is pushed to the fork until the user explicitly
