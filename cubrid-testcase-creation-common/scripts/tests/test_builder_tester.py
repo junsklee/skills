@@ -282,3 +282,79 @@ class TestInconclusive(unittest.TestCase):
         self.assertEqual(j["verdict"], "INCONCLUSIVE")
         self.assertEqual(j["pre_attempts"], [])
         self.assertEqual(j["post_logs"], [])
+
+
+class TestCaptureTransform(unittest.TestCase):
+    def test_replaces_compare_calls_and_records_mapping(self):
+        src = ("#!/bin/bash\n"
+               "csql ... > a.log 2>&1\n"
+               "    compare_result_between_files a.log a.answer\n"
+               "finish\n")
+        new, mapping = vt.capture_transform(src)
+        self.assertEqual(mapping, [(1, "a.log", "a.answer")])
+        self.assertIn('echo "ANSWER_BEGIN_1"', new)
+        self.assertIn("base64 a.log", new)
+        self.assertIn('echo "ANSWER_END_1"', new)
+        self.assertNotIn("compare_result_between_files", new)
+        self.assertIn("    echo", new)  # indentation preserved
+
+    def test_tolerates_trailing_arg_and_if_guard(self):
+        src = ("if ! compare_result_between_files x.log x.answer sort; then\n"
+               "  write_nok\nfi\n")
+        new, mapping = vt.capture_transform(src)
+        self.assertEqual(mapping, [(1, "x.log", "x.answer")])
+        self.assertIn("base64 x.log", new)
+
+    def test_multiple_calls_numbered(self):
+        src = ("compare_result_between_files x.log x.answer\n"
+               "compare_result_between_files y.log y.answer\n")
+        new, mapping = vt.capture_transform(src)
+        self.assertEqual([m[0] for m in mapping], [1, 2])
+        self.assertIn("ANSWER_BEGIN_2", new)
+
+    def test_no_compare_calls_is_noop(self):
+        src = "echo hi\nfinish\n"
+        new, mapping = vt.capture_transform(src)
+        self.assertEqual(mapping, [])
+        self.assertEqual(new, src)
+        self.assertFalse(vt.has_compare_calls(src))
+
+    def test_has_compare_calls_true_when_present(self):
+        self.assertTrue(vt.has_compare_calls("x=1; compare_result_between_files a b\n"))
+
+
+class TestExtractAnswers(unittest.TestCase):
+    def test_extracts_base64_between_exact_sentinels(self):
+        payload = base64.b64encode(b"expected output\n").decode("ascii")
+        log = ("+ echo ANSWER_BEGIN_1\n"      # sh -x trace (ignored)
+               "ANSWER_BEGIN_1\n"             # real stdout sentinel
+               "+ base64 a.log\n"             # trace (ignored)
+               + payload + "\n"
+               "ANSWER_END_1\n"
+               "+ echo ANSWER_END_1\n")
+        got = vt.extract_answers(log, [(1, "a.log", "a.answer")])
+        self.assertEqual(got[1], b"expected output\n")
+
+    def test_extracts_multiline_wrapped_base64(self):
+        raw = b"x" * 200  # base64 wraps at 76 cols -> multiple payload lines
+        payload = base64.b64encode(raw).decode("ascii")
+        wrapped = "\n".join(payload[i:i + 76] for i in range(0, len(payload), 76))
+        log = "ANSWER_BEGIN_1\n" + wrapped + "\nANSWER_END_1\n"
+        self.assertEqual(vt.extract_answers(log, [(1, "a.log", "a.answer")])[1], raw)
+
+    def test_missing_block_is_skipped(self):
+        self.assertNotIn(1, vt.extract_answers("nothing\n", [(1, "a.log", "a.answer")]))
+
+
+class TestSuggestAnswerName(unittest.TestCase):
+    def test_literal_answer_arg_uses_basename(self):
+        self.assertEqual(vt.suggest_answer_name("dir/cbrd_1.answer", "cbrd_1", 1),
+                         "cbrd_1.answer")
+
+    def test_variable_answer_arg_falls_back_to_stem(self):
+        self.assertEqual(vt.suggest_answer_name("$db.answer", "cbrd_1", 1),
+                         "cbrd_1.answer")
+
+    def test_variable_multiple_uses_index(self):
+        self.assertEqual(vt.suggest_answer_name("$db.answer", "cbrd_1", 2),
+                         "cbrd_1_2.answer")

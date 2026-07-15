@@ -240,6 +240,72 @@ def status_phase(status_resp):
     return "running"
 
 
+# Matches `compare_result_between_files <a1> <a2>` optionally preceded by an
+# `if`/`while`/`!` guard token, capturing the first two arguments.
+_COMPARE_RE = re.compile(
+    r"^(?P<indent>\s*)(?:(?:if|while)\s+)?(?:!\s+)?"
+    r"compare_result_between_files\s+(?P<a1>\S+)\s+(?P<a2>[^\s;&|]+)")
+_B64_LINE_RE = re.compile(r"^[A-Za-z0-9+/=]+$")
+
+
+def has_compare_calls(script_text):
+    return "compare_result_between_files" in script_text
+
+
+def capture_transform(script_text):
+    """Replace each `compare_result_between_files <produced> <answer> [norm]`
+    call with a sentinel base64 dump of its first (produced-log) argument.
+    Returns (new_text, mappings=[(n, produced_arg, answer_arg), ...])."""
+    lines = script_text.splitlines()
+    out, mappings, n = [], [], 0
+    for ln in lines:
+        m = _COMPARE_RE.match(ln)
+        if m:
+            n += 1
+            produced, answer, indent = m.group("a1"), m.group("a2"), m.group("indent")
+            mappings.append((n, produced, answer))
+            out.append('%secho "ANSWER_BEGIN_%d"; base64 %s; echo "ANSWER_END_%d"'
+                       % (indent, n, produced, n))
+        else:
+            out.append(ln)
+    text = "\n".join(out)
+    if script_text.endswith("\n"):
+        text += "\n"
+    return text, mappings
+
+
+def extract_answers(log_text, mappings):
+    """Decode the base64 payload between the exact-line sentinels for each n.
+    Robust to interleaved `sh -x` trace lines (they never equal the bare
+    sentinel and are not pure base64)."""
+    lines = log_text.splitlines()
+    out = {}
+    for n, _produced, _answer in mappings:
+        begin, end = "ANSWER_BEGIN_%d" % n, "ANSWER_END_%d" % n
+        try:
+            bi = lines.index(begin)
+            ei = lines.index(end, bi + 1)
+        except ValueError:
+            continue
+        payload = "".join(x.strip() for x in lines[bi + 1:ei]
+                          if _B64_LINE_RE.match(x.strip()))
+        if not payload:
+            continue
+        try:
+            out[n] = base64.b64decode(payload)
+        except Exception:
+            continue
+    return out
+
+
+def suggest_answer_name(answer_arg, entry_stem, n):
+    """Target filename for a derived answer: the literal basename if the source
+    used one, else <entry_stem>[_n].answer when it was a shell variable."""
+    if "$" not in answer_arg and answer_arg not in (".", ".."):
+        return os.path.basename(answer_arg)
+    return "%s.answer" % entry_stem if n == 1 else "%s_%d.answer" % (entry_stem, n)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
