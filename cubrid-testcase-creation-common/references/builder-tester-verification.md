@@ -1,9 +1,11 @@
 # Builder-Tester verification (shared reference)
 
-Remote build+run verification for shell test cases. `verify_testcase.py`
-submits a drafted `.sh` in custom-script mode, builds a pre-fix and a post-fix
-engine commit, and judges whether the test reproduces the bug pre-fix and
-passes post-fix. Shell only — the executor does not run SQL cases.
+Remote build+run verification for **shell and SQL** test cases.
+`verify_testcase.py` submits a drafted case in custom mode, builds a pre-fix
+and a post-fix engine commit, and judges whether the test reproduces the bug
+pre-fix and passes post-fix. Test type is `--test-type shell|sql` (default
+shell; inferred `sql` from a `.sql --script`). The shell path is documented
+throughout; the SQL differences are in "SQL test cases" below.
 
 ## Config
 
@@ -112,3 +114,56 @@ flow is the supported path.
   explicit user confirmation (`--yes`).
 - Any connection failure falls through to the next verification rung with a
   clear message; the creation flow is never blocked on the builder.
+
+## SQL test cases (`--test-type sql`)
+
+SQL cases run through the Builder-Tester **custom SQL** API (CTP develop +
+PR #757, fresh per-case Docker container). The case `.sql` travels inline —
+no repo branch needed — so a drafted case verifies before any push, like
+shell custom-script mode.
+
+> **Unofficial surface / known fragility.** This custom-SQL request shape
+> (`customSqlScript`/`customSqlAnswer`, `custom_sql_case` artifacts) is
+> confirmed by live probing but is NOT in the upstream `SQL_TESTER.md`, which
+> documents only the repo-path `tests[]` form. And answer *derivation* rides a
+> side effect — a deliberately-wrong placeholder answer makes the case `fail`,
+> and we harvest the `actual_result` artifact — not an officially supported
+> "generate answer" feature. If either behavior drifts, re-probe the live
+> server rather than trusting this doc.
+
+- `submit`/`run --script cases/<name>.sql [--answer PATH]` — the `.sql` content
+  is `customSqlScript`; the answer is `customSqlAnswer`, read from `--answer` or
+  the sibling `answers/<name>.answer`. The answer must be non-empty (the builder
+  400s otherwise) and byte-exact from a real run — derive it, never hand-write
+  it. Defaults: `buildType=debug`, `runMode=fixed-runs 1/1` (fresh container per
+  case de-flakes). A `.sql` with a sibling `.queryPlan` is refused (its answer
+  carries plan output custom mode can't reproduce — use local CTP).
+- `derive-answer --test-type sql --script cases/<name>.sql (--engine-pr REF |
+  --issue KEY | --post SHA)` — submits post-only with a placeholder answer,
+  requires the run to `fail` and produce an `actual_result` artifact, writes
+  that (byte-exact) to the sibling `answers/<name>.answer`, and prints it for
+  approval. On `pass`/`execution_error`/no artifact it stops with guidance —
+  fix the draft (a syntax error surfaces as `execution_error`, no artifact) and
+  retry.
+- Verdict semantics, commit-pair resolution, `_wait`, exit codes, and the
+  copy-ready `Verified:` line are identical to shell. Any status other than
+  `pass`/`fail` (`execution_error`, `environment_error`, `build_failed`,
+  `cancelled`) is infra → INCONCLUSIVE. On a non-VERIFIED SQL run the block
+  also prints the failing commit's `answer_diff` (best-effort; a fetch blip is
+  a soft warning, never hides the verdict). `run_sql.sh` exit is always 0 —
+  verdicts are parsed.
+
+**Artifacts** (custom mode, `testName = custom_sql_case`), at
+`GET /api/log/<requestId>/tests/<filename>`: `answer_diff`, `actual_result`,
+`expected_answer`, `case_source`, `warm_console`, `core_list`. Artifact
+entries carry `artifactType` and no `status`, so they are excluded from
+attempt counting and from the verdict block's log lines.
+
+**Answer variants.** `.answer_cci` / `.answer_WIN` cannot be derived remotely
+(single execution env) — note as reduced-evidence when a case needs them.
+
+**Post-merge regression (manual).** The repo-path form (`tests[]` +
+`testType:"sql"` + optional `sqlTcBranch`) resolves against the tester's
+`sql_tc_dir` clone, which tracks **upstream CUBRID/cubrid-testcases only** —
+fork branches are invisible. Use it by hand for post-merge regression; it is
+not wired into the skills.
