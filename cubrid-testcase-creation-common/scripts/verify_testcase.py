@@ -695,7 +695,7 @@ def _derive_meta(report, post_sha):
     return None
 
 
-def cmd_derive_answer(args):
+def _derive_answer_shell(args):
     entry_abs = os.path.abspath(args.script)
     script_text = _load_script(args.script)
     if not has_compare_calls(script_text):
@@ -745,6 +745,61 @@ def cmd_derive_answer(args):
         print("\n=== end answer #%d ===" % n)
     print("\nREVIEW REQUIRED: confirm each derived .answer matches the JIRA to-be "
           "behavior before using it. It was machine-derived from a real run.")
+
+
+def _derive_answer_sql(args):
+    entry_abs = os.path.abspath(args.script)
+    if has_queryplan_sidecar(entry_abs):
+        sys.exit("this case has a .queryPlan sidecar — plan output cannot be captured via "
+                 "custom SQL mode; derive its answer on a local CTP host (verify-procedure.md)")
+    script_text = _load_script(args.script)
+    answer_path = getattr(args, "answer", None) or resolve_answer_path(entry_abs)
+    pair, owner, repo = _engine_pair_and_owner(args)
+    post = args.post or (pair[1] if pair else None)
+    if not post:
+        sys.exit("need a post-fix commit: pass --post SHA or --engine-pr/--issue REF")
+    print("Deriving SQL answer from post-fix build:")
+    _echo_pair(owner, repo, None, post)
+    req = build_sql_request(script_text, "PLACEHOLDER\n", [post], worker_ips(),
+                            run_mode="fixed-runs", min_runs=1, max_runs=1,
+                            build_type=args.build_type)
+    if not args.yes:
+        print("[dry-run] would submit (post-only, placeholder answer) to derive the .answer")
+        print(json.dumps(elide_payload(req), indent=2))
+        print("[dry-run] pass --yes to submit")
+        return
+    task_id = _post_build(req)
+    print("taskId: %s" % task_id)
+    report = _wait(task_id, args.timeout)
+    status = (_lookup(results_by_commit(report), post).get("attempts") or ["<none>"])[0]
+    arts = find_artifacts(report, post, "actual_result")
+    if status != "fail" or not arts:
+        sys.exit("cannot derive: post-fix status=%s, actual_result artifact %s. A wrong "
+                 "placeholder answer should yield status=fail with an actual_result artifact; "
+                 "a syntax error/timeout gives execution_error (no artifact). Fix the draft and "
+                 "retry. Inspect report %s"
+                 % (status, "present" if arts else "missing", task_id))
+    content = bt_get_text("/api/log/%s/tests/%s" % (task_id, arts[0]))
+    if not content:
+        sys.exit("actual_result artifact %s was empty; inspect report %s" % (arts[0], task_id))
+    answers_dir = os.path.dirname(answer_path)
+    if answers_dir and not os.path.isdir(answers_dir):
+        os.makedirs(answers_dir)
+    # newline="" keeps the run's bytes exact (the server compares intra-line whitespace).
+    with open(answer_path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(content)
+    print("\n=== derived answer -> %s (%d bytes) ===" % (answer_path, len(content)))
+    print(content)
+    print("=== end answer ===")
+    print("\nREVIEW REQUIRED: confirm this .answer matches the JIRA to-be behavior before "
+          "using it. It was machine-derived from a real post-fix run.")
+
+
+def cmd_derive_answer(args):
+    if test_type_of(args) == "sql":
+        _derive_answer_sql(args)
+    else:
+        _derive_answer_shell(args)
 
 
 def cmd_health(args):
@@ -824,6 +879,7 @@ def main():
     pd.add_argument("--build-type", default="debug")
     pd.add_argument("--timeout", type=int, default=10800)
     pd.add_argument("--yes", action="store_true")
+    _add_sql_type_args(pd)
 
     sub.add_parser("health")
 

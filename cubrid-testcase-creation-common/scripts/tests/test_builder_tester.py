@@ -743,5 +743,73 @@ class TestCliSqlDryRun(unittest.TestCase):
         self.assertIn("queryPlan", out.stdout.decode("utf-8"))
 
 
+class TestDeriveAnswerSql(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.cases = os.path.join(self.d, "cases"); os.makedirs(self.cases)
+        self.sql = os.path.join(self.cases, "cbrd_1.sql")
+        with open(self.sql, "w") as fh:
+            fh.write("select 1;\n")
+        self.vt_path = os.path.join(os.path.dirname(__file__), "..", "verify_testcase.py")
+        self._req, self._txt, self._wait = vt.bt_request, vt.bt_get_text, vt._wait
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+        vt.bt_request, vt.bt_get_text, vt._wait = self._req, self._txt, self._wait
+
+    def test_dry_run_shows_placeholder_submit(self):
+        env = dict(os.environ); env["BUILDER_TESTER_URL"] = "http://127.0.0.1:1"
+        out = subprocess.run(
+            [sys.executable, self.vt_path, "derive-answer", "--test-type", "sql",
+             "--script", self.sql, "--post", "BBB"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+        text = out.stdout.decode("utf-8")
+        self.assertEqual(out.returncode, 0, text)
+        self.assertIn("[dry-run]", text)
+        self.assertIn('"testType": "sql"', text)
+
+    def test_queryplan_sidecar_blocks(self):
+        open(os.path.join(self.cases, "cbrd_1.queryPlan"), "w").close()
+        env = dict(os.environ); env["BUILDER_TESTER_URL"] = "http://127.0.0.1:1"
+        out = subprocess.run(
+            [sys.executable, self.vt_path, "derive-answer", "--test-type", "sql",
+             "--script", self.sql, "--post", "BBB"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("queryPlan", out.stdout.decode("utf-8"))
+
+    def test_success_writes_answer_from_actual_result(self):
+        # in-process (not subprocess) so we can monkeypatch the network layer
+        import argparse
+        report = {"testType": "sql", "results": [{"commit": "BBBsha", "status": "fail",
+            "attemptLogMetadata": [
+                {"attempt": 1, "logFileName": "sql_BBB_x.log", "status": "fail"},
+                {"attempt": 1, "logFileName": "sql_actual_BBB_x.result",
+                 "artifactType": "actual_result"}]}]}
+        vt.bt_request = lambda path, **k: {"status": "accepted", "taskId": "req_D"}
+        vt._wait = lambda tid, timeout: report
+        vt.bt_get_text = lambda path, **k: "===\n1\n"
+        args = argparse.Namespace(script=self.sql, test_type="sql", answer=None,
+                                  engine_pr=None, issue=None, post="BBBsha",
+                                  build_type="debug", timeout=60, yes=True)
+        vt._derive_answer_sql(args)
+        out_path = os.path.join(self.d, "answers", "cbrd_1.answer")
+        self.assertTrue(os.path.exists(out_path))
+        with open(out_path) as fh:
+            self.assertEqual(fh.read(), "===\n1\n")
+
+    def test_no_artifact_or_not_fail_errors(self):
+        import argparse
+        report = {"testType": "sql", "results": [{"commit": "BBBsha", "status": "pass",
+            "attemptLogMetadata": [{"attempt": 1, "logFileName": "sql_BBB_x.log", "status": "pass"}]}]}
+        vt.bt_request = lambda path, **k: {"status": "accepted", "taskId": "req_D"}
+        vt._wait = lambda tid, timeout: report
+        args = argparse.Namespace(script=self.sql, test_type="sql", answer=None,
+                                  engine_pr=None, issue=None, post="BBBsha",
+                                  build_type="debug", timeout=60, yes=True)
+        with self.assertRaises(SystemExit):
+            vt._derive_answer_sql(args)
+
+
 if __name__ == "__main__":
     unittest.main()
