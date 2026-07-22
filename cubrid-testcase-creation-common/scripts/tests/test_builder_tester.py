@@ -810,6 +810,37 @@ class TestDeriveAnswerSql(unittest.TestCase):
         with self.assertRaises(SystemExit):
             vt._derive_answer_sql(args)
 
+    def test_byte_exact_write_preserves_cr(self):
+        import argparse
+        report = {"testType": "sql", "results": [{"commit": "BBBsha", "status": "fail",
+            "attemptLogMetadata": [
+                {"attempt": 1, "logFileName": "sql_BBB_x.log", "status": "fail"},
+                {"attempt": 1, "logFileName": "sql_actual_BBB_x.result",
+                 "artifactType": "actual_result"}]}]}
+        vt.bt_request = lambda path, **k: {"status": "accepted", "taskId": "req_D"}
+        vt._wait = lambda tid, timeout: report
+        vt.bt_get_text = lambda path, **k: "a\r\nb\n"
+        args = argparse.Namespace(script=self.sql, test_type="sql", answer=None,
+                                  engine_pr=None, issue=None, post="BBBsha",
+                                  build_type="debug", timeout=60, yes=True)
+        vt._derive_answer_sql(args)
+        out_path = os.path.join(self.d, "answers", "cbrd_1.answer")
+        with open(out_path, "rb") as fh:
+            self.assertEqual(fh.read(), b"a\r\nb\n")
+
+    def test_fail_but_no_artifact_errors(self):
+        import argparse
+        report = {"testType": "sql", "results": [{"commit": "BBBsha", "status": "fail",
+            "attemptLogMetadata": [{"attempt": 1, "logFileName": "sql_BBB_x.log",
+                                    "status": "fail"}]}]}
+        vt.bt_request = lambda path, **k: {"status": "accepted", "taskId": "req_D"}
+        vt._wait = lambda tid, timeout: report
+        args = argparse.Namespace(script=self.sql, test_type="sql", answer=None,
+                                  engine_pr=None, issue=None, post="BBBsha",
+                                  build_type="debug", timeout=60, yes=True)
+        with self.assertRaises(SystemExit):
+            vt._derive_answer_sql(args)
+
 
 if __name__ == "__main__":
     unittest.main()
