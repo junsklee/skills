@@ -526,5 +526,100 @@ class TestWaitResilientToStatusBlip(unittest.TestCase):
         self.assertEqual(vt._wait("req_9", 60)["id"], "req_9")
 
 
+class TestBuildSqlRequest(unittest.TestCase):
+    def test_shape_and_defaults(self):
+        req = vt.build_sql_request("select 1;\n", "===\n1\n", ["aaa", "bbb"],
+                                   ["h:8090"], callback_url="http://cb/callback")
+        self.assertEqual(req["testType"], "sql")
+        self.assertEqual(req["customSqlScript"], "select 1;\n")
+        self.assertEqual(req["customSqlAnswer"], "===\n1\n")
+        self.assertEqual(req["commits"], ["aaa", "bbb"])
+        self.assertEqual(req["minRuns"], 1)
+        self.assertEqual(req["maxRuns"], 1)
+        self.assertEqual(req["buildType"], "debug")
+        self.assertEqual(req["commitBuildMode"], "checkout")
+        self.assertNotIn("tests", req)
+        self.assertNotIn("customShellScript", req)
+        self.assertNotIn("customAttachments", req)
+
+    def test_empty_answer_raises(self):
+        with self.assertRaises(ValueError):
+            vt.build_sql_request("select 1;\n", "", ["aaa"], ["h:8090"])
+
+
+class TestResolveAnswerPath(unittest.TestCase):
+    def test_cases_sibling_answers(self):
+        p = vt.resolve_answer_path("/x/sql/_13_issues/_26_2h/cases/cbrd_1.sql")
+        self.assertEqual(p, "/x/sql/_13_issues/_26_2h/answers/cbrd_1.answer")
+
+    def test_non_cases_alongside(self):
+        p = vt.resolve_answer_path("/tmp/scratch/cbrd_1.sql")
+        self.assertEqual(p, "/tmp/scratch/cbrd_1.answer")
+
+
+class TestQueryPlanSidecar(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.sql = os.path.join(self.d, "cbrd_1.sql")
+        open(self.sql, "w").close()
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def test_absent(self):
+        self.assertFalse(vt.has_queryplan_sidecar(self.sql))
+
+    def test_present(self):
+        open(os.path.join(self.d, "cbrd_1.queryPlan"), "w").close()
+        self.assertTrue(vt.has_queryplan_sidecar(self.sql))
+
+
+class TestFindArtifacts(unittest.TestCase):
+    REPORT = {"results": [{"commit": "aa136ea1111", "attemptLogMetadata": [
+        {"attempt": 1, "logFileName": "sql_aa136ea_x.log", "status": "fail"},
+        {"attempt": 1, "logFileName": "sql_actual_aa136ea_x.result", "artifactType": "actual_result"},
+        {"attempt": 1, "logFileName": "sql_diff_aa136ea_x.diff", "artifactType": "answer_diff"},
+    ]}]}
+
+    def test_selects_by_type_and_commit(self):
+        self.assertEqual(vt.find_artifacts(self.REPORT, "aa136ea", "actual_result"),
+                         ["sql_actual_aa136ea_x.result"])
+        self.assertEqual(vt.find_artifacts(self.REPORT, "aa136ea1111", "answer_diff"),
+                         ["sql_diff_aa136ea_x.diff"])
+
+    def test_missing_type(self):
+        self.assertEqual(vt.find_artifacts(self.REPORT, "aa136ea", "core_list"), [])
+
+    def test_empty_commit_matches_nothing(self):
+        self.assertEqual(vt.find_artifacts(self.REPORT, "", "actual_result"), [])
+
+
+class TestReportTestType(unittest.TestCase):
+    def test_top_level(self):
+        self.assertEqual(vt.report_test_type({"testType": "sql", "results": []}), "sql")
+
+    def test_from_results(self):
+        self.assertEqual(vt.report_test_type({"results": [{"testType": "sql"}]}), "sql")
+
+    def test_default_shell(self):
+        self.assertEqual(vt.report_test_type({"results": [{}]}), "shell")
+
+
+class TestElideSqlAndLogsFilter(unittest.TestCase):
+    def test_elides_sql_fields_only_when_present(self):
+        req = vt.build_sql_request("select 1;\n", "===\n1\n", ["a"], ["h:1"],
+                                   callback_url="http://c/callback")
+        e = vt.elide_payload(req)
+        self.assertIn("sha256:", e["customSqlScript"])
+        self.assertIn("sha256:", e["customSqlAnswer"])
+        self.assertNotIn("customShellScript", e)   # not spuriously added
+        self.assertEqual(e["commits"], ["a"])
+
+    def test_results_by_commit_excludes_artifacts_from_logs(self):
+        by = vt.results_by_commit(TestFindArtifacts.REPORT)
+        self.assertEqual(by["aa136ea1111"]["attempts"], ["fail"])
+        self.assertEqual(by["aa136ea1111"]["logs"], ["sql_aa136ea_x.log"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -88,6 +88,66 @@ def build_request(script_text, commits, worker_ip_list, attachments=None,
     return req
 
 
+def build_sql_request(script_text, answer_text, commits, worker_ip_list,
+                      run_mode="fixed-runs", min_runs=1, max_runs=1,
+                      build_type="debug", callback_url=None,
+                      commit_build_mode="checkout"):
+    if not answer_text:
+        raise ValueError(
+            "customSqlAnswer must be non-empty (the builder 400s without it); "
+            "derive it first with 'derive-answer --test-type sql'")
+    return {
+        "commits": list(commits),
+        "testType": "sql",
+        "customSqlScript": script_text,
+        "customSqlAnswer": answer_text,
+        "workerIps": list(worker_ip_list),
+        "runMode": run_mode, "minRuns": min_runs, "maxRuns": max_runs,
+        "buildType": build_type, "commitBuildMode": commit_build_mode,
+        "callbackUrl": callback_url or (builder_url() + "/callback"),
+    }
+
+
+def resolve_answer_path(script_path):
+    """Sibling answers/<name>.answer for a cases/<name>.sql; else alongside."""
+    d = os.path.dirname(os.path.abspath(script_path))
+    stem = os.path.splitext(os.path.basename(script_path))[0]
+    if os.path.basename(d) == "cases":
+        return os.path.join(os.path.dirname(d), "answers", stem + ".answer")
+    return os.path.join(d, stem + ".answer")
+
+
+def has_queryplan_sidecar(script_path):
+    """True if a sibling <name>.queryPlan exists next to the .sql (plan test)."""
+    stem = os.path.splitext(os.path.abspath(script_path))[0]
+    return os.path.exists(stem + ".queryPlan")
+
+
+def find_artifacts(report, commit_sha, artifact_type):
+    """logFileNames of artifact entries of the given type for the commit."""
+    if not commit_sha:
+        return []
+    out = []
+    for r in report.get("results", []):
+        c = r.get("commit") or ""
+        if not (c.startswith(commit_sha[:7]) or commit_sha.startswith(c[:7] or "x")):
+            continue
+        for a in r.get("attemptLogMetadata", []):
+            if a.get("artifactType") == artifact_type and a.get("logFileName"):
+                out.append(a["logFileName"])
+    return out
+
+
+def report_test_type(report):
+    tt = report.get("testType")
+    if tt:
+        return tt
+    for r in report.get("results", []):
+        if r.get("testType"):
+            return r["testType"]
+    return "shell"
+
+
 def parse_submit_response(resp):
     task_id = resp.get("taskId")
     if resp.get("status") == "error" or not task_id:
@@ -114,7 +174,8 @@ def results_by_commit(report):
             continue
         meta = r.get("attemptLogMetadata", [])
         attempts = [a.get("status") for a in meta if a.get("status")]
-        logs = [a.get("logFileName") for a in meta if a.get("logFileName")]
+        logs = [a.get("logFileName") for a in meta
+                if a.get("logFileName") and not a.get("artifactType")]
         if not attempts and r.get("status"):
             attempts = [r.get("status")]
         entry = out.setdefault(commit, {"attempts": [], "logs": []})
@@ -388,7 +449,9 @@ def elide_payload(req):
         b = s.encode("utf-8")
         return "<%d bytes sha256:%s>" % (len(b), hashlib.sha256(b).hexdigest()[:12])
     safe = dict(req)
-    safe["customShellScript"] = mark(req.get("customShellScript", ""))
+    for k in ("customShellScript", "customSqlScript", "customSqlAnswer"):
+        if k in req:
+            safe[k] = mark(req[k])
     if "customAttachments" in req:
         safe["customAttachments"] = [
             {"targetPath": a["targetPath"], "contentBase64": mark(a["contentBase64"])}
