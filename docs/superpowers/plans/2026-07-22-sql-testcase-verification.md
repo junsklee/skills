@@ -10,25 +10,28 @@
 
 ## Global Constraints
 
-- **Python 3.6, stdlib only.** Match the style of the existing `verify_testcase.py` / `btlib.py` — `%`-formatting, no f-strings, no 3.7+ stdlib.
-- **Dry-run by default; `--yes` performs the only network write (build submission).** Local file writes (a derived `.answer`) are allowed without `--yes`, but the submission that produces them is gated.
+- **Python 3.6, stdlib only.** Match the existing `verify_testcase.py`/`btlib.py` style — `%`-formatting, no f-strings, no 3.7+ stdlib.
+- **Dry-run by default; `--yes` performs the only network write (build submission).** A derived `.answer` write is local, but the submission that produces it is gated.
 - **This host never executes tests/CTP/csql/cubrid.** The tool only talks HTTP to the remote Builder-Tester.
-- **No Claude/Anthropic watermark** anywhere — code, comments, commit messages, PR bodies. No `Co-Authored-By`, no 🤖.
-- **`.answer` files are never hand-written** — machine-derived from a real run and shown to the user for approval before use.
+- **No Claude/Anthropic watermark** anywhere. No `Co-Authored-By`, no 🤖.
+- **`.answer` files are never hand-written** — machine-derived from a real run, shown to the user for approval before use.
 - **Config (unchanged):** `BUILDER_TESTER_URL` default `http://192.168.2.154:8091`; `BUILDER_TESTER_WORKER_IPS` default `192.168.2.154:8090`.
 - **PR titles English; PR bodies + JIRA Korean.**
 - **Work on branch `feat/sql-testcase-verify`** (already created off `main` in `~/worktrees/skills-main`). Do not open a PR unless asked.
 - **Test command** (from `~/worktrees/skills-main`): `python3 -m unittest discover -s cubrid-testcase-creation-common/scripts/tests -v`
 
-## Server contract (SQL custom mode — verified live 2026-07-22)
+## Server contract (SQL custom mode)
 
-- `POST /api/builder/build` custom-SQL body: `{commits, testType:"sql", customSqlScript, customSqlAnswer, workerIps, runMode/minRuns/maxRuns, buildType, commitBuildMode, callbackUrl}`. **No `tests[]`** (a `custom_script_test` placeholder is inserted). `customSqlAnswer` REQUIRED non-empty (else HTTP 400). `customShellScript`/`customScriptTestPath`/`customAttachments` rejected in SQL mode.
-- Runs in a **fresh per-case container**, once per commit; `testName = custom_sql_case`.
-- Statuses: `pass`/`fail`/`execution_error`/`environment_error`/`build_error`/`flaky`/`cancelled`. `fail` = answer mismatch; `execution_error` = missing answer / timeout / no verdict; `environment_error` = provisioning/Docker. Exit code is always 0 (verdict is parsed).
+The **custom-SQL request surface** below (`customSqlScript`/`customSqlAnswer`, `custom_sql_case` artifacts, fresh-per-case container) was **discovered and confirmed by live probing** of the deployed server on 2026-07-22 — request fields, `testType`, the `custom_script_test` placeholder, artifact `artifactType` values, and the derive side-effect were all reproduced against real reports. It is **NOT documented in the upstream `SQL_TESTER.md`** (which covers only the repo-path `tests[]` form). Treat it as a live-verified but unofficial surface: **if behavior seems to drift, re-probe the live server** rather than trusting a doc.
+
+- `POST /api/builder/build` custom-SQL body: `{commits, testType:"sql", customSqlScript, customSqlAnswer, workerIps, runMode/minRuns/maxRuns, buildType, commitBuildMode, callbackUrl}`. **No `tests[]`** (a `custom_script_test` placeholder is inserted server-side). `customSqlAnswer` REQUIRED non-empty (HTTP 400 otherwise). `customShellScript`/`customScriptTestPath`/`customAttachments` rejected in SQL mode.
+- Runs in a **fresh per-case container**, once per commit; top-level `test` is `custom_script_test`, artifacts use `testName = custom_sql_case`.
+- Statuses observed/handled: `pass`, `fail`, and infra/other. `fail` = answer mismatch; a missing/empty answer, per-case timeout, or no verdict → `execution_error`; provisioning/Docker → `environment_error`; build-phase failures surface as `build_failed`. **Any status other than `pass`/`fail`** is treated as infra → INCONCLUSIVE by the existing `judge_matrix` (`_KNOWN_STATUS = ("pass","fail")`), so the exact non-pass/fail spelling doesn't matter to correctness. `run_sql.sh` exit code is always 0 — verdict is parsed.
 - `attemptLogMetadata[]`: plain attempt logs `{attempt, logFileName, status}`; artifact entries `{attempt, logFileName, artifactType, executionEnv?}` (**no `status`**). Artifact types: `answer_diff`, `actual_result`, `expected_answer`, `case_source`, `warm_console`, `core_list`.
-- Custom-SQL artifact filenames use `testName=custom_sql_case`, e.g. `sql_actual_<c7>_custom_sql_case.result`. Fetch any via `GET /api/log/<requestId>/tests/<filename>` (text/plain).
-- Answer-derivation protocol: submit with a placeholder answer → the run `fail`s → read the `actual_result` artifact → that is the real output.
+- Custom-mode artifact filenames, e.g. `sql_actual_<c7>_custom_sql_case.result`. Fetch any via `GET /api/log/<requestId>/tests/<filename>` (text/plain).
+- **Answer-derivation is a side-channel, not an official feature.** `SQL_TESTER.md` lists answer-file generation as out of scope. The mechanism used here — submit a *deliberately-wrong placeholder* answer, let the case `fail`, and harvest the incidental `actual_result` artifact (the real output) — was reproduced live and is byte-identical to what a passing re-submit uses as `expected_answer`, but it rides a failure side effect the maintainers have not committed to. Documented as a known fragility (re-probe if it breaks).
 - `/api/reports` items carry `testType`.
+- **`buildType`:** every live SQL report observed used `release`; this plan defaults SQL to **`debug`** (a deliberate choice, matching the shell default and the CTP debug-build convention). `--build-type` overrides. The Task 9 calibration run is the first real `debug`-SQL submission and confirms it end-to-end before reliance.
 
 ---
 
@@ -39,7 +42,6 @@
 - Test: `cubrid-testcase-creation-common/scripts/tests/test_builder_tester.py`
 
 **Interfaces:**
-- Consumes: `builder_url` (btlib).
 - Produces: `build_sql_request(script_text, answer_text, commits, worker_ip_list, run_mode="fixed-runs", min_runs=1, max_runs=1, build_type="debug", callback_url=None, commit_build_mode="checkout") -> dict` (raises `ValueError` on empty answer); `resolve_answer_path(script_path) -> str`; `has_queryplan_sidecar(script_path) -> bool`; `find_artifacts(report, commit_sha, artifact_type) -> [str]`; `report_test_type(report) -> str`. Modifies `elide_payload` (elide only present content keys; add SQL keys) and `results_by_commit` (exclude artifact entries from `logs`).
 
 - [ ] **Step 1: Write the failing tests** — append to `test_builder_tester.py` (before the `if __name__` guard):
@@ -109,6 +111,9 @@ class TestFindArtifacts(unittest.TestCase):
     def test_missing_type(self):
         self.assertEqual(vt.find_artifacts(self.REPORT, "aa136ea", "core_list"), [])
 
+    def test_empty_commit_matches_nothing(self):
+        self.assertEqual(vt.find_artifacts(self.REPORT, "", "actual_result"), [])
+
 
 class TestReportTestType(unittest.TestCase):
     def test_top_level(self):
@@ -140,7 +145,7 @@ class TestElideSqlAndLogsFilter(unittest.TestCase):
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `python3 -m unittest discover -s cubrid-testcase-creation-common/scripts/tests -v`
-Expected: FAIL — `AttributeError: module 'verify_testcase' has no attribute 'build_sql_request'` (and the elide/logs tests fail on current behavior).
+Expected: FAIL — `AttributeError: module 'verify_testcase' has no attribute 'build_sql_request'`.
 
 - [ ] **Step 3: Implement** — in `verify_testcase.py`:
 
@@ -184,6 +189,8 @@ def has_queryplan_sidecar(script_path):
 
 def find_artifacts(report, commit_sha, artifact_type):
     """logFileNames of artifact entries of the given type for the commit."""
+    if not commit_sha:
+        return []
     out = []
     for r in report.get("results", []):
         c = r.get("commit") or ""
@@ -205,9 +212,7 @@ def report_test_type(report):
     return "shell"
 ```
 
-(b) Replace `results_by_commit`'s `logs` line so artifact entries (which carry `artifactType`) are excluded from attempt logs:
-
-Find:
+(b) Replace `results_by_commit`'s `logs` line so artifact entries (which carry `artifactType`) are excluded from attempt logs. Find:
 ```python
         logs = [a.get("logFileName") for a in meta if a.get("logFileName")]
 ```
@@ -217,9 +222,22 @@ Replace with:
                 if a.get("logFileName") and not a.get("artifactType")]
 ```
 
-(c) Replace `elide_payload` so it only elides content keys that are present (fixing the spurious `customShellScript` on SQL requests) and covers the SQL fields:
-
-Find the whole `elide_payload` function and replace with:
+(c) Replace `elide_payload` (only elide content keys that are present — fixing a spurious `customShellScript` on SQL requests — and cover the SQL fields). Find:
+```python
+def elide_payload(req):
+    """A print-safe copy: large content fields shown as size + sha256."""
+    def mark(s):
+        b = s.encode("utf-8")
+        return "<%d bytes sha256:%s>" % (len(b), hashlib.sha256(b).hexdigest()[:12])
+    safe = dict(req)
+    safe["customShellScript"] = mark(req.get("customShellScript", ""))
+    if "customAttachments" in req:
+        safe["customAttachments"] = [
+            {"targetPath": a["targetPath"], "contentBase64": mark(a["contentBase64"])}
+            for a in req["customAttachments"]]
+    return safe
+```
+Replace with:
 ```python
 def elide_payload(req):
     """A print-safe copy: large content fields shown as size + sha256."""
@@ -240,7 +258,7 @@ def elide_payload(req):
 - [ ] **Step 4: Run to verify pass**
 
 Run: `python3 -m unittest discover -s cubrid-testcase-creation-common/scripts/tests -v`
-Expected: PASS (all new classes + existing suite unchanged — the existing `TestResultsByCommit`/`TestElidePayload` still pass because shell reports have no `artifactType` and shell requests still carry `customShellScript`).
+Expected: PASS (all new classes; the existing `TestResultsByCommit`/`TestElidePayload` still pass — shell reports have no `artifactType`, shell requests still carry `customShellScript`).
 
 - [ ] **Step 5: Commit**
 
@@ -260,10 +278,10 @@ git commit -m "verify: SQL request assembly + artifact/answer helpers"
 - Test: `cubrid-testcase-creation-common/scripts/tests/test_builder_tester.py`
 
 **Interfaces:**
-- Consumes: Task 1 helpers; `build_sql_request`, `resolve_answer_path`, `find_artifacts`, `report_test_type`, existing `build_request`/`collect_attachments`/`_wait`/`judge_matrix`/`_print_and_exit`.
-- Produces: `test_type_of(args) -> "shell"|"sql"`; `resolve_runs(args, test_type) -> None` (mutates args); `show_sql_diff(report, judged, task_id) -> None`. `_submit` gains a `test_type` param and a SQL branch. `submit`/`run` parsers gain `--test-type {shell,sql}` and `--answer`; `--min-runs`/`--max-runs` default to `None`.
+- Consumes: Task 1 helpers; existing `build_request`/`collect_attachments`/`_wait`/`judge_matrix`/`_print_and_exit`/`bt_get_text`/`BuilderTesterError`.
+- Produces: `test_type_of(args) -> "shell"|"sql"`; `resolve_runs(args, test_type) -> None` (mutates); `show_sql_diff(report, judged, task_id) -> None` (best-effort, never raises); `_add_sql_type_args(p)`. `_submit` gains a `test_type` param with a SQL branch (empty-answer + sidecar guards). `submit`/`run` parsers gain `--test-type`/`--answer` (via `_add_sql_type_args`); `--min-runs`/`--max-runs` default `None`; `judge` gains `--test-type` (accepted for symmetry).
 
-- [ ] **Step 1: Write the failing test** — append:
+- [ ] **Step 1: Write the failing tests** — append:
 
 ```python
 class TestTestTypeOf(unittest.TestCase):
@@ -299,50 +317,99 @@ class TestResolveRuns(unittest.TestCase):
         self.assertEqual((a.min_runs, a.max_runs), (3, 5))
 
 
+class TestShowSqlDiff(unittest.TestCase):
+    def setUp(self):
+        self._orig = vt.bt_get_text
+
+    def tearDown(self):
+        vt.bt_get_text = self._orig
+
+    REPORT = {"testType": "sql", "results": [{"commit": "POSTsha", "attemptLogMetadata": [
+        {"attempt": 1, "logFileName": "sql_POST_x.log", "status": "fail"},
+        {"attempt": 1, "logFileName": "sql_diff_POST_x.diff", "artifactType": "answer_diff"}]}]}
+
+    def _judged(self, verdict):
+        return {"verdict": verdict, "pre_sha": "PREsha", "post_sha": "POSTsha"}
+
+    def test_prints_diff_on_not_verified(self):
+        calls = []
+        vt.bt_get_text = lambda path, **k: calls.append(path) or "DIFF-TEXT-HERE"
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            vt.show_sql_diff(self.REPORT, self._judged("NOT-VERIFIED"), "req_1")
+        self.assertIn("DIFF-TEXT-HERE", buf.getvalue())
+        self.assertTrue(calls)
+
+    def test_verified_fetches_nothing(self):
+        calls = []
+        vt.bt_get_text = lambda path, **k: calls.append(path) or "x"
+        vt.show_sql_diff(self.REPORT, self._judged("VERIFIED"), "req_1")
+        self.assertEqual(calls, [])
+
+    def test_fetch_failure_is_soft(self):
+        def boom(path, **k):
+            raise vt.BuilderTesterError("blip")
+        vt.bt_get_text = boom
+        # must NOT raise — the verdict must still be printable afterwards
+        vt.show_sql_diff(self.REPORT, self._judged("NOT-VERIFIED"), "req_1")
+
+
 class TestCliSqlDryRun(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
-        cases = os.path.join(self.d, "sql", "_13_issues", "_26_2h", "cases")
-        answers = os.path.join(self.d, "sql", "_13_issues", "_26_2h", "answers")
-        os.makedirs(cases); os.makedirs(answers)
-        self.sql = os.path.join(cases, "cbrd_1.sql")
+        self.cases = os.path.join(self.d, "sql", "_13_issues", "_26_2h", "cases")
+        self.answers = os.path.join(self.d, "sql", "_13_issues", "_26_2h", "answers")
+        os.makedirs(self.cases); os.makedirs(self.answers)
+        self.sql = os.path.join(self.cases, "cbrd_1.sql")
         with open(self.sql, "w") as fh:
             fh.write("select 1;\n")
-        with open(os.path.join(answers, "cbrd_1.answer"), "w") as fh:
+        self.ans = os.path.join(self.answers, "cbrd_1.answer")
+        with open(self.ans, "w") as fh:
             fh.write("===\n1\n")
+        self.vt_path = os.path.join(os.path.dirname(__file__), "..", "verify_testcase.py")
 
     def tearDown(self):
         shutil.rmtree(self.d)
 
-    def test_sql_submit_dry_run(self):
+    def _run(self, *extra):
         env = dict(os.environ); env["BUILDER_TESTER_URL"] = "http://127.0.0.1:1"
-        vt_path = os.path.join(os.path.dirname(__file__), "..", "verify_testcase.py")
-        out = subprocess.run(
-            [sys.executable, vt_path, "submit", "--script", self.sql,
-             "--pre", "AAA", "--post", "BBB"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
-        text = out.stdout.decode("utf-8")
+        return subprocess.run([sys.executable, self.vt_path, "submit", "--script", self.sql,
+                               "--pre", "AAA", "--post", "BBB"] + list(extra),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+
+    def test_sql_submit_dry_run(self):
+        out = self._run(); text = out.stdout.decode("utf-8")
         self.assertEqual(out.returncode, 0, text)
         self.assertIn("[dry-run]", text)
         self.assertIn('"testType": "sql"', text)
         self.assertIn("customSqlAnswer", text)
 
-    def test_sql_submit_missing_answer_errors(self):
-        os.remove(os.path.join(self.d, "sql", "_13_issues", "_26_2h", "answers", "cbrd_1.answer"))
-        env = dict(os.environ); env["BUILDER_TESTER_URL"] = "http://127.0.0.1:1"
-        vt_path = os.path.join(os.path.dirname(__file__), "..", "verify_testcase.py")
-        out = subprocess.run(
-            [sys.executable, vt_path, "submit", "--script", self.sql,
-             "--pre", "AAA", "--post", "BBB"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+    def test_missing_answer_errors(self):
+        os.remove(self.ans)
+        out = self._run()
         self.assertNotEqual(out.returncode, 0)
         self.assertIn("derive-answer", out.stdout.decode("utf-8"))
+
+    def test_empty_answer_errors_not_traceback(self):
+        open(self.ans, "w").close()  # exists but 0 bytes
+        out = self._run()
+        self.assertNotEqual(out.returncode, 0)
+        text = out.stdout.decode("utf-8")
+        self.assertIn("derive-answer", text)
+        self.assertNotIn("Traceback", text)
+
+    def test_queryplan_sidecar_blocks_run(self):
+        open(os.path.join(self.cases, "cbrd_1.queryPlan"), "w").close()
+        out = self._run()
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("queryPlan", out.stdout.decode("utf-8"))
 ```
 
 - [ ] **Step 2: Run to verify fail**
 
 Run: `python3 -m unittest discover -s cubrid-testcase-creation-common/scripts/tests -v`
-Expected: FAIL — `AttributeError: ... 'test_type_of'`; the CLI SQL dry-run prints a shell payload / errors.
+Expected: FAIL — `AttributeError: ... 'test_type_of'`; SQL submit prints a shell payload / crashes.
 
 - [ ] **Step 3: Implement** — in `verify_testcase.py`:
 
@@ -367,36 +434,49 @@ def resolve_runs(args, test_type):
 
 
 def show_sql_diff(report, judged, task_id):
-    """On a non-VERIFIED SQL run, print the answer_diff of the failing commit."""
-    if report_test_type(report) != "sql" or judged["verdict"] == "VERIFIED":
+    """Best-effort: on a non-VERIFIED SQL run, print the failing commit's
+    answer_diff. Never raises — a fetch blip must not swallow the verdict."""
+    if report_test_type(report) != "sql" or judged.get("verdict") == "VERIFIED":
         return
     for sha in (judged.get("post_sha"), judged.get("pre_sha")):
-        if not sha:
-            continue
         diffs = find_artifacts(report, sha, "answer_diff")
-        if diffs:
+        if not diffs:
+            continue
+        try:
+            text = bt_get_text("/api/log/%s/tests/%s" % (task_id, diffs[0]))
+        except BuilderTesterError as e:
+            print("  (could not fetch answer_diff: %s)" % e)
+            return
+        if text:
             print("\n--- answer_diff (%s) ---" % sha[:7])
-            print(bt_get_text("/api/log/%s/tests/%s" % (task_id, diffs[0]))[:4000])
-            break
+            print(text[:4000])
+        return
 ```
 
-(b) Replace `_submit` to branch on `test_type`:
+(b) Replace `_submit` to branch on `test_type` (SQL guards: empty answer, `.queryPlan` sidecar):
 
+Find the whole current `_submit` function and replace with:
 ```python
 def _submit(script_text, entry_abs, commits, args, yes, test_type):
+    entry_abs = os.path.abspath(entry_abs)
     if test_type == "sql":
+        if has_queryplan_sidecar(entry_abs):
+            sys.exit("this case has a .queryPlan sidecar — its answer contains plan output "
+                     "that custom SQL mode cannot reproduce; verify it on a local CTP host")
         answer_path = getattr(args, "answer", None) or resolve_answer_path(entry_abs)
         try:
             answer_text = _load_script(answer_path)
         except (IOError, OSError):
-            sys.exit("no answer file at %s — derive it first: verify_testcase.py "
-                     "derive-answer --test-type sql --script %s (--engine-pr/--issue/--post)"
-                     % (answer_path, entry_abs))
+            answer_text = None
+        if not answer_text:
+            sys.exit("no usable answer at %s (missing or empty) — derive it first: "
+                     "verify_testcase.py derive-answer --test-type sql --script %s "
+                     "(--engine-pr/--issue/--post)" % (answer_path, entry_abs))
         req = build_sql_request(script_text, answer_text, commits, worker_ips(),
                                 run_mode=args.run_mode, min_runs=args.min_runs,
                                 max_runs=args.max_runs, build_type=args.build_type)
     else:
-        case_dir = os.path.dirname(os.path.abspath(entry_abs))
+        case_dir = os.path.dirname(entry_abs)
         atts = collect_attachments(case_dir, entry_abs)
         req = build_request(script_text, commits, worker_ips(), attachments=atts,
                             run_mode=args.run_mode, min_runs=args.min_runs,
@@ -411,7 +491,7 @@ def _submit(script_text, entry_abs, commits, args, yes, test_type):
     return task_id
 ```
 
-(c) Update `cmd_submit`, `cmd_run`, `cmd_judge` to resolve/thread `test_type` and show the SQL diff:
+(c) Replace `cmd_submit`, `cmd_run`, `cmd_judge`:
 
 ```python
 def cmd_submit(args):
@@ -448,9 +528,7 @@ def cmd_judge(args):
     _print_and_exit(judged, args.task_id)
 ```
 
-(d) In `_add_run_args`, change the run-count defaults to `None` and add `--test-type`/`--answer`:
-
-Find:
+(d) Add `_add_sql_type_args`, use it in `_add_run_args`, and change the run-count defaults to `None`. Find:
 ```python
 def _add_run_args(p):
     p.add_argument("--run-mode", default="fixed-runs")
@@ -460,24 +538,44 @@ def _add_run_args(p):
 ```
 Replace with:
 ```python
+def _add_sql_type_args(p):
+    p.add_argument("--test-type", choices=["shell", "sql"], default=None,
+                   help="default shell; inferred sql from a .sql --script")
+    p.add_argument("--answer", default=None,
+                   help="SQL only: answer file (default: sibling answers/<name>.answer)")
+
+
 def _add_run_args(p):
     p.add_argument("--run-mode", default="fixed-runs")
     p.add_argument("--min-runs", type=int, default=None)
     p.add_argument("--max-runs", type=int, default=None)
     p.add_argument("--build-type", default="debug")
-    p.add_argument("--test-type", choices=["shell", "sql"], default=None,
-                   help="default shell; inferred sql from a .sql --script")
-    p.add_argument("--answer", default=None,
-                   help="SQL only: answer file (default: sibling answers/<name>.answer)")
+    _add_sql_type_args(p)
+```
+
+(e) Add `--test-type` to the `judge` subparser (spec §4 lists it; `cmd_judge` auto-detects via the report). Find:
+```python
+    pj = sub.add_parser("judge")
+    pj.add_argument("--task-id", required=True)
+    _add_commit_args(pj)
+    pj.add_argument("--special-case", default=None,
+                    choices=["core-dump", "flaky-repro", "feature"])
+```
+Replace with:
+```python
+    pj = sub.add_parser("judge")
+    pj.add_argument("--task-id", required=True)
+    _add_commit_args(pj)
+    pj.add_argument("--special-case", default=None,
+                    choices=["core-dump", "flaky-repro", "feature"])
+    pj.add_argument("--test-type", choices=["shell", "sql"], default=None,
+                    help="accepted for symmetry; judge auto-detects from the report")
 ```
 
 - [ ] **Step 4: Run to verify pass**
 
 Run: `python3 -m unittest discover -s cubrid-testcase-creation-common/scripts/tests -v`
-Expected: PASS — SQL submit dry-run prints `"testType": "sql"` + `customSqlAnswer`, hermetic (no network); missing-answer errors with a `derive-answer` hint. Shell dry-run test (`TestCliDryRun`) still passes (shell path unchanged; `resolve_runs` gives it 2/2).
-
-Also confirm shell run defaults unchanged:
-Run: `python3 cubrid-testcase-creation-common/scripts/verify_testcase.py submit --script /tmp/x.sh --pre A --post B 2>&1 | grep -E '"minRuns"|customShellScript'` — expected `"minRuns": 2` (create `/tmp/x.sh` with `echo hi` first, or ignore if it errors on missing file — the point is the shell default path).
+Expected: PASS — SQL submit dry-run prints `"testType": "sql"` + `customSqlAnswer` (hermetic); missing/empty answer both exit non-zero with a `derive-answer` hint and no traceback; a `.queryPlan` sidecar blocks the run; `show_sql_diff` prints on NOT-VERIFIED, fetches nothing on VERIFIED, and swallows a fetch blip. Shell behavior is unchanged (`TestCliDryRun`, `TestResolveRuns.test_shell_defaults_2_2`).
 
 - [ ] **Step 5: Commit**
 
@@ -485,7 +583,7 @@ Run: `python3 cubrid-testcase-creation-common/scripts/verify_testcase.py submit 
 cd ~/worktrees/skills-main
 git add cubrid-testcase-creation-common/scripts/verify_testcase.py \
         cubrid-testcase-creation-common/scripts/tests/test_builder_tester.py
-git commit -m "verify: CLI SQL mode for submit/run/judge (--test-type/--answer, 1/1 default, diff on fail)"
+git commit -m "verify: CLI SQL mode for submit/run/judge (--test-type, 1/1 default, guards, diff-on-fail)"
 ```
 
 ---
@@ -497,28 +595,30 @@ git commit -m "verify: CLI SQL mode for submit/run/judge (--test-type/--answer, 
 - Test: `cubrid-testcase-creation-common/scripts/tests/test_builder_tester.py`
 
 **Interfaces:**
-- Consumes: Task 1 helpers (`build_sql_request`, `resolve_answer_path`, `has_queryplan_sidecar`, `find_artifacts`), `_wait`, `_post_build`, `bt_get_text`, `results_by_commit`, `_lookup`.
-- Produces: `_derive_answer_sql(args)`; `cmd_derive_answer` routes by `test_type_of(args)` to it or the renamed existing `_derive_answer_shell(args)`. `derive-answer` parser gains `--test-type`, `--answer`.
+- Consumes: Task 1/2 helpers (`build_sql_request`, `resolve_answer_path`, `has_queryplan_sidecar`, `find_artifacts`, `results_by_commit`, `_lookup`), `_wait`, `_post_build`, `bt_get_text`.
+- Produces: `_derive_answer_sql(args)`; `cmd_derive_answer` routes by `test_type_of(args)` to it or the renamed existing `_derive_answer_shell(args)`. `derive-answer` parser gains `--test-type`/`--answer` (via `_add_sql_type_args`).
 
-- [ ] **Step 1: Write the failing test** — append (dry-run + sidecar guard, no network):
+- [ ] **Step 1: Write the failing tests** — append:
 
 ```python
-class TestDeriveAnswerSqlDryRun(unittest.TestCase):
+class TestDeriveAnswerSql(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
-        cases = os.path.join(self.d, "cases"); os.makedirs(cases)
-        self.sql = os.path.join(cases, "cbrd_1.sql")
+        self.cases = os.path.join(self.d, "cases"); os.makedirs(self.cases)
+        self.sql = os.path.join(self.cases, "cbrd_1.sql")
         with open(self.sql, "w") as fh:
             fh.write("select 1;\n")
+        self.vt_path = os.path.join(os.path.dirname(__file__), "..", "verify_testcase.py")
+        self._req, self._txt, self._wait = vt.bt_request, vt.bt_get_text, vt._wait
 
     def tearDown(self):
         shutil.rmtree(self.d)
+        vt.bt_request, vt.bt_get_text, vt._wait = self._req, self._txt, self._wait
 
     def test_dry_run_shows_placeholder_submit(self):
         env = dict(os.environ); env["BUILDER_TESTER_URL"] = "http://127.0.0.1:1"
-        vt_path = os.path.join(os.path.dirname(__file__), "..", "verify_testcase.py")
         out = subprocess.run(
-            [sys.executable, vt_path, "derive-answer", "--test-type", "sql",
+            [sys.executable, self.vt_path, "derive-answer", "--test-type", "sql",
              "--script", self.sql, "--post", "BBB"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
         text = out.stdout.decode("utf-8")
@@ -526,22 +626,53 @@ class TestDeriveAnswerSqlDryRun(unittest.TestCase):
         self.assertIn("[dry-run]", text)
         self.assertIn('"testType": "sql"', text)
 
-    def test_queryplan_sidecar_blocks_derivation(self):
-        open(os.path.join(self.d, "cases", "cbrd_1.queryPlan"), "w").close()
+    def test_queryplan_sidecar_blocks(self):
+        open(os.path.join(self.cases, "cbrd_1.queryPlan"), "w").close()
         env = dict(os.environ); env["BUILDER_TESTER_URL"] = "http://127.0.0.1:1"
-        vt_path = os.path.join(os.path.dirname(__file__), "..", "verify_testcase.py")
         out = subprocess.run(
-            [sys.executable, vt_path, "derive-answer", "--test-type", "sql",
+            [sys.executable, self.vt_path, "derive-answer", "--test-type", "sql",
              "--script", self.sql, "--post", "BBB"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
         self.assertNotEqual(out.returncode, 0)
         self.assertIn("queryPlan", out.stdout.decode("utf-8"))
+
+    def test_success_writes_answer_from_actual_result(self):
+        # in-process (not subprocess) so we can monkeypatch the network layer
+        import argparse
+        report = {"testType": "sql", "results": [{"commit": "BBBsha", "status": "fail",
+            "attemptLogMetadata": [
+                {"attempt": 1, "logFileName": "sql_BBB_x.log", "status": "fail"},
+                {"attempt": 1, "logFileName": "sql_actual_BBB_x.result",
+                 "artifactType": "actual_result"}]}]}
+        vt.bt_request = lambda path, **k: {"status": "accepted", "taskId": "req_D"}
+        vt._wait = lambda tid, timeout: report
+        vt.bt_get_text = lambda path, **k: "===\n1\n"
+        args = argparse.Namespace(script=self.sql, test_type="sql", answer=None,
+                                  engine_pr=None, issue=None, post="BBBsha",
+                                  build_type="debug", timeout=60, yes=True)
+        vt._derive_answer_sql(args)
+        out_path = os.path.join(self.d, "answers", "cbrd_1.answer")
+        self.assertTrue(os.path.exists(out_path))
+        with open(out_path) as fh:
+            self.assertEqual(fh.read(), "===\n1\n")
+
+    def test_no_artifact_or_not_fail_errors(self):
+        import argparse
+        report = {"testType": "sql", "results": [{"commit": "BBBsha", "status": "pass",
+            "attemptLogMetadata": [{"attempt": 1, "logFileName": "sql_BBB_x.log", "status": "pass"}]}]}
+        vt.bt_request = lambda path, **k: {"status": "accepted", "taskId": "req_D"}
+        vt._wait = lambda tid, timeout: report
+        args = argparse.Namespace(script=self.sql, test_type="sql", answer=None,
+                                  engine_pr=None, issue=None, post="BBBsha",
+                                  build_type="debug", timeout=60, yes=True)
+        with self.assertRaises(SystemExit):
+            vt._derive_answer_sql(args)
 ```
 
 - [ ] **Step 2: Run to verify fail**
 
 Run: `python3 -m unittest discover -s cubrid-testcase-creation-common/scripts/tests -v`
-Expected: FAIL — `derive-answer` has no `--test-type`; current path assumes shell (`has_compare_calls`).
+Expected: FAIL — `derive-answer` has no `--test-type`; `_derive_answer_sql` undefined.
 
 - [ ] **Step 3: Implement** — in `verify_testcase.py`:
 
@@ -574,21 +705,22 @@ def _derive_answer_sql(args):
     task_id = _post_build(req)
     print("taskId: %s" % task_id)
     report = _wait(task_id, args.timeout)
+    status = (_lookup(results_by_commit(report), post).get("attempts") or ["<none>"])[0]
     arts = find_artifacts(report, post, "actual_result")
-    if not arts:
-        by = results_by_commit(report)
-        st = (_lookup(by, post).get("attempts") or ["<none>"])[0]
-        sys.exit("no actual_result artifact for %s (status=%s) — a syntax error/timeout in "
-                 "the draft gives execution_error with no artifact, and a placeholder that "
-                 "somehow matched gives pass. Fix the draft and retry. Inspect report %s"
-                 % (post[:7], st, task_id))
+    if status != "fail" or not arts:
+        sys.exit("cannot derive: post-fix status=%s, actual_result artifact %s. A wrong "
+                 "placeholder answer should yield status=fail with an actual_result artifact; "
+                 "a syntax error/timeout gives execution_error (no artifact). Fix the draft and "
+                 "retry. Inspect report %s"
+                 % (status, "present" if arts else "missing", task_id))
     content = bt_get_text("/api/log/%s/tests/%s" % (task_id, arts[0]))
     if not content:
         sys.exit("actual_result artifact %s was empty; inspect report %s" % (arts[0], task_id))
     answers_dir = os.path.dirname(answer_path)
     if answers_dir and not os.path.isdir(answers_dir):
         os.makedirs(answers_dir)
-    with open(answer_path, "w", encoding="utf-8") as fh:
+    # newline="" keeps the run's bytes exact (the server compares intra-line whitespace).
+    with open(answer_path, "w", encoding="utf-8", newline="") as fh:
         fh.write(content)
     print("\n=== derived answer -> %s (%d bytes) ===" % (answer_path, len(content)))
     print(content)
@@ -604,20 +736,34 @@ def cmd_derive_answer(args):
         _derive_answer_shell(args)
 ```
 
-(c) Extend the `derive-answer` subparser (in `main`) with `--test-type` and `--answer`:
-
-Find the `pd = sub.add_parser("derive-answer")` block and add, after `pd.add_argument("--post")`:
+(c) Extend the `derive-answer` subparser with `--test-type`/`--answer` via the shared helper. Find:
 ```python
-    pd.add_argument("--test-type", choices=["shell", "sql"], default=None,
-                    help="default shell; inferred sql from a .sql --script")
-    pd.add_argument("--answer", default=None,
-                    help="SQL only: answer file to write (default: sibling answers/<name>.answer)")
+    pd = sub.add_parser("derive-answer")
+    pd.add_argument("--script", required=True)
+    pd.add_argument("--engine-pr")
+    pd.add_argument("--issue")
+    pd.add_argument("--post")
+    pd.add_argument("--build-type", default="debug")
+    pd.add_argument("--timeout", type=int, default=10800)
+    pd.add_argument("--yes", action="store_true")
+```
+Replace with:
+```python
+    pd = sub.add_parser("derive-answer")
+    pd.add_argument("--script", required=True)
+    pd.add_argument("--engine-pr")
+    pd.add_argument("--issue")
+    pd.add_argument("--post")
+    pd.add_argument("--build-type", default="debug")
+    pd.add_argument("--timeout", type=int, default=10800)
+    pd.add_argument("--yes", action="store_true")
+    _add_sql_type_args(pd)
 ```
 
 - [ ] **Step 4: Run to verify pass**
 
 Run: `python3 -m unittest discover -s cubrid-testcase-creation-common/scripts/tests -v`
-Expected: PASS — SQL derive dry-run prints the placeholder-answer submit; the `.queryPlan` sidecar guard errors before any submit. Shell `derive-answer` path unchanged (existing shell derive still routes to `_derive_answer_shell`).
+Expected: PASS — SQL derive dry-run prints the placeholder submit; the `.queryPlan` guard errors before any submit; the monkeypatched success path writes `answers/cbrd_1.answer` byte-for-byte from the `actual_result` artifact; a non-`fail`/no-artifact report raises `SystemExit`. The shell `derive-answer` path is unchanged (`_derive_answer_shell` body identical; router dispatches `.sh` scripts to it).
 
 - [ ] **Step 5: Commit**
 
@@ -625,7 +771,7 @@ Expected: PASS — SQL derive dry-run prints the placeholder-answer submit; the 
 cd ~/worktrees/skills-main
 git add cubrid-testcase-creation-common/scripts/verify_testcase.py \
         cubrid-testcase-creation-common/scripts/tests/test_builder_tester.py
-git commit -m "verify: SQL answer derivation via actual_result artifact (+ queryPlan guard)"
+git commit -m "verify: SQL answer derivation via actual_result artifact (fail-gated, byte-exact)"
 ```
 
 ---
@@ -635,9 +781,7 @@ git commit -m "verify: SQL answer derivation via actual_result artifact (+ query
 **Files:**
 - Modify: `cubrid-testcase-creation-common/references/builder-tester-verification.md`
 
-- [ ] **Step 1: Fix the opening** — replace the first paragraph:
-
-Find:
+- [ ] **Step 1: Fix the opening** — Find:
 ```markdown
 Remote build+run verification for shell test cases. `verify_testcase.py`
 submits a drafted `.sh` in custom-script mode, builds a pre-fix and a post-fix
@@ -651,7 +795,7 @@ Remote build+run verification for **shell and SQL** test cases.
 and a post-fix engine commit, and judges whether the test reproduces the bug
 pre-fix and passes post-fix. Test type is `--test-type shell|sql` (default
 shell; inferred `sql` from a `.sql --script`). The shell path is documented
-throughout; the SQL differences are collected in "SQL test cases" below.
+throughout; the SQL differences are in "SQL test cases" below.
 ```
 
 - [ ] **Step 2: Append the SQL section** at the end of the file:
@@ -661,43 +805,48 @@ throughout; the SQL differences are collected in "SQL test cases" below.
 
 SQL cases run through the Builder-Tester **custom SQL** API (CTP develop +
 PR #757, fresh per-case Docker container). The case `.sql` travels inline —
-no repo branch needed — so a drafted case verifies before any push, exactly
-like shell custom-script mode.
+no repo branch needed — so a drafted case verifies before any push, like
+shell custom-script mode.
 
-- `submit`/`run --script cases/<name>.sql [--answer PATH]` — the `.sql`
-  content is `customSqlScript`; the answer is `customSqlAnswer`, read from
-  `--answer` or the sibling `answers/<name>.answer`. The answer must be
-  non-empty (the builder 400s otherwise) and byte-exact from a real run —
-  derive it, never hand-write it. Defaults: `buildType=debug`,
-  `runMode=fixed-runs 1/1` (a fresh container per case already de-flakes).
+> **Unofficial surface / known fragility.** This custom-SQL request shape
+> (`customSqlScript`/`customSqlAnswer`, `custom_sql_case` artifacts) is
+> confirmed by live probing but is NOT in the upstream `SQL_TESTER.md`, which
+> documents only the repo-path `tests[]` form. And answer *derivation* rides a
+> side effect — a deliberately-wrong placeholder answer makes the case `fail`,
+> and we harvest the `actual_result` artifact — not an officially supported
+> "generate answer" feature. If either behavior drifts, re-probe the live
+> server rather than trusting this doc.
+
+- `submit`/`run --script cases/<name>.sql [--answer PATH]` — the `.sql` content
+  is `customSqlScript`; the answer is `customSqlAnswer`, read from `--answer` or
+  the sibling `answers/<name>.answer`. The answer must be non-empty (the builder
+  400s otherwise) and byte-exact from a real run — derive it, never hand-write
+  it. Defaults: `buildType=debug`, `runMode=fixed-runs 1/1` (fresh container per
+  case de-flakes). A `.sql` with a sibling `.queryPlan` is refused (its answer
+  carries plan output custom mode can't reproduce — use local CTP).
 - `derive-answer --test-type sql --script cases/<name>.sql (--engine-pr REF |
-  --issue KEY | --post SHA)` — submits the case post-only with a placeholder
-  answer, reads the resulting `actual_result` failure artifact (the real
-  output), writes it to the sibling `answers/<name>.answer`, and prints it
-  for approval. On `execution_error`/`pass`/no artifact it stops with a clear
-  message — fix the draft (e.g. a syntax error surfaces as `execution_error`
-  with no artifact) and retry.
+  --issue KEY | --post SHA)` — submits post-only with a placeholder answer,
+  requires the run to `fail` and produce an `actual_result` artifact, writes
+  that (byte-exact) to the sibling `answers/<name>.answer`, and prints it for
+  approval. On `pass`/`execution_error`/no artifact it stops with guidance —
+  fix the draft (a syntax error surfaces as `execution_error`, no artifact) and
+  retry.
 - Verdict semantics, commit-pair resolution, `_wait`, exit codes, and the
-  copy-ready `Verified:` line are identical to shell. SQL statuses
-  `execution_error`/`environment_error`/`build_error` are non-pass/fail →
-  INCONCLUSIVE. On a non-VERIFIED SQL run the block also prints the failing
-  commit's `answer_diff` artifact so the mismatch is self-explanatory.
-- `run_sql.sh` exit code is always 0; verdicts are parsed — never inferred.
+  copy-ready `Verified:` line are identical to shell. Any status other than
+  `pass`/`fail` (`execution_error`, `environment_error`, `build_failed`,
+  `cancelled`) is infra → INCONCLUSIVE. On a non-VERIFIED SQL run the block
+  also prints the failing commit's `answer_diff` (best-effort; a fetch blip is
+  a soft warning, never hides the verdict). `run_sql.sh` exit is always 0 —
+  verdicts are parsed.
 
-**Artifacts** (custom mode, `testName = custom_sql_case`), fetchable at
-`GET /api/log/<requestId>/tests/<filename>`:
-`answer_diff` (unified diff), `actual_result` (real output), `expected_answer`
-(the answer compared against), `case_source`, `warm_console`, `core_list`.
-Artifact entries carry `artifactType` and no `status`, so they are excluded
-from attempt counting and from the verdict block's log lines.
-
-**`.queryPlan` limitation.** Custom SQL mode has no channel for a `.queryPlan`
-sidecar. For a case with a sibling `<name>.queryPlan`, remote derivation is
-refused and remote verification is skipped (the derived answer would lack
-plan output); route those to the local-CTP or handoff rung.
+**Artifacts** (custom mode, `testName = custom_sql_case`), at
+`GET /api/log/<requestId>/tests/<filename>`: `answer_diff`, `actual_result`,
+`expected_answer`, `case_source`, `warm_console`, `core_list`. Artifact
+entries carry `artifactType` and no `status`, so they are excluded from
+attempt counting and from the verdict block's log lines.
 
 **Answer variants.** `.answer_cci` / `.answer_WIN` cannot be derived remotely
-(single execution env); note as reduced-evidence when a case needs them.
+(single execution env) — note as reduced-evidence when a case needs them.
 
 **Post-merge regression (manual).** The repo-path form (`tests[]` +
 `testType:"sql"` + optional `sqlTcBranch`) resolves against the tester's
@@ -708,7 +857,7 @@ not wired into the skills.
 
 - [ ] **Step 3: Verify**
 
-Run: `grep -c "test-type sql\|custom_sql_case\|queryPlan limitation\|derive-answer --test-type sql" cubrid-testcase-creation-common/references/builder-tester-verification.md`
+Run: `grep -c "test-type sql\|custom_sql_case\|Unofficial surface\|derive-answer --test-type sql" cubrid-testcase-creation-common/references/builder-tester-verification.md`
 Expected: nonzero.
 
 - [ ] **Step 4: Commit**
@@ -716,7 +865,7 @@ Expected: nonzero.
 ```bash
 cd ~/worktrees/skills-main
 git add cubrid-testcase-creation-common/references/builder-tester-verification.md
-git commit -m "verify: document SQL custom-mode verification + derivation"
+git commit -m "verify: document SQL custom-mode verification + derivation (with fragility caveat)"
 ```
 
 ---
@@ -735,7 +884,7 @@ not apply here — its executor runs shell cases only. SQL answer generation
 uses the local CTP path or the printed verify handoff.
 ```
 
-In `## Path resolution`, change the `$COMMON` bullet to add `verify_testcase.py` and a `$BT` line. Find:
+Find:
 ```markdown
 - `$COMMON` = `$SKILL/../cubrid-testcase-creation-common` — scripts
   (`fetch_context.py`, `push_package.py`, `get_engine_pr.py`) and references
@@ -752,8 +901,14 @@ Replace with:
   fall through the ladder (step 7).
 ```
 
-- [ ] **Step 2: Replace step 7** — find the current step 7 (the `Local answers (only if CUBRID_TC_ALLOW_LOCAL_CTP=1)` block) and replace with the three-rung ladder:
-
+- [ ] **Step 2: Replace step 7** — Find:
+```markdown
+7. **Local answers (only if `CUBRID_TC_ALLOW_LOCAL_CTP=1`).** Follow
+   `$COMMON/references/verify-procedure.md` (SQL section): seed → run →
+   promote `.result` → re-run `Success:1`; fold real answers into the
+   package; re-run the gate once.
+```
+Replace with:
 ```markdown
 7. **Runtime verification + answer generation (before the push gate).** Read
    `$COMMON/references/builder-tester-verification.md`, then take the first
@@ -768,16 +923,16 @@ Replace with:
         `answers/<name>.answer`.
       - **Verify:** `verify_testcase.py run --test-type sql --script
         <cases/name.sql> --engine-pr <ref>` (dry-run first; `--yes` after
-        confirmation). VERIFIED → proceed. NOT-VERIFIED/FLAKY → diagnose
-        (the printed `answer_diff` helps) and fix, re-entering steps 5–6; do
-        not push a case that fails to reproduce or is flaky. INCONCLUSIVE →
+        confirmation). VERIFIED → proceed. NOT-VERIFIED/FLAKY → diagnose (the
+        printed `answer_diff` helps) and fix, re-entering steps 5–6; do not
+        push a case that fails to reproduce or is flaky. INCONCLUSIVE →
         builder/env issue; report and fall to rung b/c. `--special-case`
         applies as for shell.
       Files WITH a `.queryPlan` sidecar cannot be derived/verified in custom
-      mode (no sidecar channel) — leave their answers empty and route them to
-      rung b/c, noting it in the render. Fold each verdict block into the
-      render (step 8) and the PR body. All non-sidecar files must be VERIFIED
-      before the push.
+      mode (no sidecar channel; the tool refuses them) — leave their answers
+      empty and route them to rung b/c, noting it in the render. Fold each
+      verdict block into the render (step 8) and the PR body. All non-sidecar
+      files must be VERIFIED before the push.
    b. **Local CTP** — only if `CUBRID_TC_ALLOW_LOCAL_CTP=1`: follow
       `$COMMON/references/verify-procedure.md` (SQL section): seed → run →
       promote `.result` → re-run `Success:1`; fold real answers into the
@@ -787,13 +942,16 @@ Replace with:
       with supplied answers).
 ```
 
-- [ ] **Step 3: Update Phase 2 intake** — in Phase 2 step 1 (`Intake`), append one sentence:
-
-Find the end of the `1. **Intake.**` paragraph and add:
+- [ ] **Step 3: Update Phase 2 intake** — Find:
 ```markdown
-   Answers already derived on the remote rung are byte-exact from a real run
-   (no re-validation needed beyond confirming the approved content landed);
-   apply the full semantic validation only to hand-supplied answers.
+   user the concern; do not commit silently.
+```
+Replace with:
+```markdown
+   user the concern; do not commit silently. Answers already derived on the
+   remote rung are byte-exact from a real run (only confirm the approved
+   content landed); apply the full semantic validation to hand-supplied
+   answers.
 ```
 
 - [ ] **Step 4: Verify**
@@ -801,10 +959,10 @@ Find the end of the `1. **Intake.**` paragraph and add:
 Run:
 ```bash
 grep -n "Runtime verification + answer generation\|derive-answer --test-type sql\|run --test-type sql\|\$BT" create-cubrid-sql-testcase/SKILL.md
-grep -c "shell only\|shell cases only" create-cubrid-sql-testcase/SKILL.md
+grep -c "shell cases only\|executor runs shell" create-cubrid-sql-testcase/SKILL.md
 python3 -c "import io; io.open('create-cubrid-sql-testcase/SKILL.md',encoding='utf-8').read(); print('ok')"
 ```
-Expected: matches for the ladder terms; `0` for the deleted shell-only note; `ok`.
+Expected: matches for the ladder terms; `0` for the deleted note; `ok`.
 
 - [ ] **Step 5: Commit**
 
@@ -821,11 +979,9 @@ git commit -m "sql-tc: wire remote SQL verification + answer derivation into ste
 **Files:**
 - Modify: `create-cubrid-sql-testcase/references/sql-authoring.md`
 
-Findings from the 2026-07 spot-check (N=15 recent cubrid-testcases SQL cases) + `sql_guide.md` develop. All additions are marked as current-format observations.
+Findings from the 2026-07 spot-check (N=15 recent cubrid-testcases SQL cases) + `sql_guide.md` develop. All additions marked as current-format observations.
 
-- [ ] **Step 1: Header block rule** — replace the `## File structure` first bullet:
-
-Find:
+- [ ] **Step 1: Header block rule** — Find:
 ```markdown
 - Header block first:
   `/** This test case verifies CBRD-XXXXX: <title> */` plus a numbered
@@ -841,9 +997,7 @@ Replace with:
   banner is an accepted alternative.
 ```
 
-- [ ] **Step 2: evaluate-label rule** — replace the `evaluate 'Case N:'` bullet:
-
-Find:
+- [ ] **Step 2: evaluate-label rule** — Find:
 ```markdown
 - `evaluate 'Case N: description';` before each scenario, numbered
   sequentially, captions truthful. 3–10 scenarios per file is the norm.
@@ -851,15 +1005,13 @@ Find:
 Replace with:
 ```markdown
 - Label each scenario with `evaluate '<label>';` before it, numbered
-  sequentially, captions truthful (they land in the `.answer` for traceability).
-  The label wording is not standardized — recent cases use `[TEST N] <desc>`
-  or `[N] <desc>` as often as `Case N:`; any consistent, descriptive scheme is
-  fine. 3–10 scenarios per file is the norm.
+  sequentially, captions truthful (they land in the `.answer` for
+  traceability). The label wording is not standardized — recent cases use
+  `[TEST N] <desc>` or `[N] <desc>` as often as `Case N:`; any consistent,
+  descriptive scheme is fine. 3–10 scenarios per file is the norm.
 ```
 
-- [ ] **Step 3: Cleanup / DROP rule** — replace the shared-database bullet:
-
-Find:
+- [ ] **Step 3: Cleanup / DROP rule** — Find:
 ```markdown
 - **The suite shares ONE database.** Undo everything at the end: drop every
   table/view/serial/trigger/procedure, `deallocate prepare` every
@@ -871,16 +1023,14 @@ Replace with:
 - **The suite shares ONE database.** Undo everything at the end: drop every
   table/view/serial/trigger/procedure, `deallocate prepare` every `prepare`,
   `drop variable` every session variable, restore every `SET SYSTEM
-  PARAMETERS` to its original value. `DROP ... IF EXISTS` is required at
-  CREATE time (re-run safety); end-of-file cleanup DROPs need NOT be
-  `IF EXISTS` (bare `DROP TABLE t;` is the dominant real pattern). A
-  fully-symmetric IF-EXISTS teardown is optional best practice for suites
-  likely to be re-run after a mid-file failure.
+  PARAMETERS` to its original value. `DROP ... IF EXISTS` is required at CREATE
+  time (re-run safety); end-of-file cleanup DROPs need NOT be `IF EXISTS` (bare
+  `DROP TABLE t;` is the dominant real pattern). A fully-symmetric IF-EXISTS
+  teardown is optional best practice for suites likely to be re-run after a
+  mid-file failure.
 ```
 
-- [ ] **Step 4: Plan-test rule** — replace the plan-tests bullet under `## Determinism by construction`:
-
-Find:
+- [ ] **Step 4: Plan-test rule** — Find:
 ```markdown
 - Plan tests: pin the plan — hints (`NO_ELIMINATE_JOIN`, `ORDERED`,
   `MATERIALIZE`, `/*+ recompile */`) where needed; `UPDATE STATISTICS ON
@@ -888,20 +1038,26 @@ Find:
 ```
 Replace with:
 ```markdown
-- Plan tests: create an EMPTY `cases/<name>.queryPlan` sidecar
-  (case-sensitive extension) to make CTP emit the query plan into the result
-  — this is the house convention; do NOT use the inline `--@queryplan`
-  directive for new drafts. Pin the plan with hints (`NO_ELIMINATE_JOIN`,
-  `ORDERED`, `MATERIALIZE`, `/*+ recompile */`) where needed; scope
-  `UPDATE STATISTICS ON <tables>` to the tables under test, never
-  `all classes`. Note: a `.queryPlan` case cannot be verified via remote
-  Builder-Tester (no sidecar channel — see builder-tester-verification.md);
-  generate/verify its answer on a local CTP host.
+- Plan tests: create an EMPTY `cases/<name>.queryPlan` sidecar (case-sensitive
+  extension) to make CTP emit the query plan into the result — this is the
+  house convention; do NOT use the inline `--@queryplan` directive for new
+  drafts. Pin the plan with hints (`NO_ELIMINATE_JOIN`, `ORDERED`,
+  `MATERIALIZE`, `/*+ recompile */`) where needed; scope `UPDATE STATISTICS ON
+  <tables>` to the tables under test, never `all classes`. Note: a
+  `.queryPlan` case cannot be verified via remote Builder-Tester (no sidecar
+  channel — see builder-tester-verification.md); generate/verify its answer on
+  a local CTP host.
 ```
 
-- [ ] **Step 5: Answer-variants + error-case notes** — under `## Error cases`, after the existing bullets add:
-
+- [ ] **Step 5: Answer-variants + error-case notes** — under `## Error cases`, Find:
 ```markdown
+- An unexpected error/result may be a product bug: do not design the case
+  to bake it in — flag it for a CBRD issue instead.
+```
+Replace with:
+```markdown
+- An unexpected error/result may be a product bug: do not design the case
+  to bake it in — flag it for a CBRD issue instead.
 - Answer variants are opt-in, created only on a real divergence and kept in
   sync thereafter: `answers/<name>.answer_cci` (CCI output differs — rare,
   seen mainly in older plan/trace cases) and `.answer_WIN` (Windows differs —
@@ -912,9 +1068,7 @@ Replace with:
   case, so a masked failure can't pass silently.
 ```
 
-- [ ] **Step 6: Naming rule** — replace the package-shape naming bullet:
-
-Find:
+- [ ] **Step 6: Naming rule** — Find:
 ```markdown
 - Bug fix: `sql/_13_issues/_{yy}_{1|2}h/cases/…`; release-targeted issue:
   `sql/_{no}_{release_code}/cbrd_XXXXX/cases/…` — match where sibling
@@ -960,7 +1114,7 @@ git commit -m "sql-tc: align authoring doctrine with sql_guide + 2026-07 corpus 
 - Modify: `cubrid-testcase-creation-common/references/two-phase-protocol.md`
 - Modify: `cubrid-testcase-creation-common/references/verify-procedure.md`
 
-- [ ] **Step 1: two-phase-protocol.md** — replace the SQL-exclusion sentence (verified present verbatim at line 42). Find:
+- [ ] **Step 1: two-phase-protocol.md** — replace the SQL-exclusion sentence (present verbatim at line 42). Find:
 ```markdown
 handoff. SQL cases have no remote option (the executor is shell-only).
 ```
@@ -972,9 +1126,16 @@ pre/post verify) → local CTP → handoff. A `.sql` with a `.queryPlan` sidecar
 has no remote option (no sidecar channel) and uses local CTP / handoff.
 ```
 
-- [ ] **Step 2: verify-procedure.md** — after the existing shell-prefer note (lines 9–13), add a SQL analog:
-
+- [ ] **Step 2: verify-procedure.md** — after the existing shell-prefer note (the blockquote at lines 9–13), add a SQL analog. Find:
 ```markdown
+> when the Builder-Tester gateway is unreachable and
+> `CUBRID_TC_ALLOW_LOCAL_CTP=1` is set.
+```
+Replace with:
+```markdown
+> when the Builder-Tester gateway is unreachable and
+> `CUBRID_TC_ALLOW_LOCAL_CTP=1` is set.
+
 > For SQL cases, prefer remote Builder-Tester verification too
 > (`builder-tester-verification.md`, `--test-type sql`) — it derives the
 > `.answer` from a real run and proves pre-fix fail / post-fix pass without a
@@ -986,7 +1147,8 @@ has no remote option (no sidecar channel) and uses local CTP / handoff.
 - [ ] **Step 3: Verify**
 
 Run: `grep -c "custom SQL\|--test-type sql" cubrid-testcase-creation-common/references/two-phase-protocol.md cubrid-testcase-creation-common/references/verify-procedure.md`
-Expected: nonzero in both; both files still parse (`python3 -c "import io;[io.open(f,encoding='utf-8').read() for f in ['cubrid-testcase-creation-common/references/two-phase-protocol.md','cubrid-testcase-creation-common/references/verify-procedure.md']];print('ok')"`).
+Expected: nonzero in both. Parse check:
+`python3 -c "import io;[io.open(f,encoding='utf-8').read() for f in ['cubrid-testcase-creation-common/references/two-phase-protocol.md','cubrid-testcase-creation-common/references/verify-procedure.md']];print('ok')"`
 
 - [ ] **Step 4: Commit**
 
@@ -1004,7 +1166,7 @@ git commit -m "verify: shared references note the SQL remote-verification rung"
 **Files:**
 - Modify: `review-cubrid-testcase-pr/SKILL.md`
 
-- [ ] **Step 1: Generalize the header** — find:
+- [ ] **Step 1: Generalize the header** — Find:
 ```markdown
 ### Optional: runtime verification of a shell TC PR (ask first)
 
@@ -1017,8 +1179,11 @@ Replace with:
 For a shell or SQL test-case PR, offer — never run unprompted — a remote
 ```
 
-- [ ] **Step 2: Generalize the invocation** — find (verified present verbatim at lines 149–152):
+- [ ] **Step 2: Generalize the fetch + invocation** — Find (verbatim, lines ~146–152):
 ```markdown
+On agreement, read `$COMMON/references/builder-tester-verification.md`, fetch
+the PR's shell package into a scratch dir with
+`python3 $COMMON/scripts/fetch_context.py get <owner/repo> <case-dir paths> --out $scratch --ref <pr-head-sha>`,
 then run against the PR head's entry script and the issue's engine PR:
 
 `python3 $COMMON/scripts/verify_testcase.py run --script <fetched entry.sh>
@@ -1026,7 +1191,12 @@ then run against the PR head's entry script and the issue's engine PR:
 ```
 Replace with:
 ```markdown
-then run against the PR head's entry file and the issue's engine PR:
+On agreement, read `$COMMON/references/builder-tester-verification.md`, fetch
+the PR's package into a scratch dir with `python3
+$COMMON/scripts/fetch_context.py get <owner/repo> <paths> --out $scratch --ref
+<pr-head-sha>` — for a SQL PR pass BOTH the `cases/` and sibling `answers/`
+paths so the committed `.answer` is present. Then run against the PR head's
+entry file and the issue's engine PR:
 
 - **Shell TC PR:** `python3 $COMMON/scripts/verify_testcase.py run
   --script <fetched cases/name.sh> --engine-pr <engine ref>`.
@@ -1041,7 +1211,7 @@ then run against the PR head's entry file and the issue's engine PR:
 
 - [ ] **Step 3: Verify**
 
-Run: `grep -c "run --test-type sql\|SQL TC PR" review-cubrid-testcase-pr/SKILL.md`; expected nonzero. `python3 -c "import io; io.open('review-cubrid-testcase-pr/SKILL.md',encoding='utf-8').read(); print('ok')"`.
+Run: `grep -c "run --test-type sql\|SQL TC PR\|sibling .answers. paths" review-cubrid-testcase-pr/SKILL.md`; expected nonzero. `python3 -c "import io; io.open('review-cubrid-testcase-pr/SKILL.md',encoding='utf-8').read(); print('ok')"`.
 
 - [ ] **Step 4: Commit**
 
@@ -1059,9 +1229,8 @@ git commit -m "review: offer remote verification for SQL TC PRs too"
 - Modify: `cubrid-testcase-creation-common/scripts/tests/live_check.sh`
 - Create: `docs/superpowers/plans/2026-07-22-sql-calibration.md`
 
-- [ ] **Step 1: Extend `live_check.sh`** — after the existing reports/attempt-log block, add a SQL-report probe. Append inside the existing Python heredoc (or add a second one) — add this block before the final `PY` of the reports check, adapting to the current file; the intent: find a `testType == "sql"` report and fetch one of its artifacts.
+- [ ] **Step 1: Extend `live_check.sh`** — add this second heredoc after the existing reports/attempt-log check block in `live_check.sh` (it filters on `artifactType` so it genuinely exercises the artifact-fetch path, not a plain attempt log):
 
-Add this second heredoc after the existing one in `live_check.sh`:
 ```bash
 echo "== sql report + artifact (read-only) =="
 python3 - "$here" <<'PY'
@@ -1075,19 +1244,20 @@ if not sqlrep:
 print("sql report:", sqlrep["id"])
 for r in sqlrep.get("results", []):
     for a in r.get("attemptLogMetadata", []):
-        if a.get("logFileName"):
+        if a.get("artifactType") and a.get("logFileName"):   # artifact, not a plain log
             txt = btlib.bt_get_text("/api/log/%s/tests/%s" % (sqlrep["id"], a["logFileName"]))
             assert txt is not None, "empty artifact"
-            print("sql artifact OK: %s (%d bytes)" % (a["logFileName"], len(txt)))
+            print("sql artifact OK: %s %s (%d bytes)"
+                  % (a["artifactType"], a["logFileName"], len(txt)))
             sys.exit(0)
-print("SQL report has no fetchable artifact (ok)")
+print("SQL report has no artifact to sample (ok)")
 PY
 ```
 
 - [ ] **Step 2: Run the live check (informational)**
 
 Run: `bash cubrid-testcase-creation-common/scripts/tests/live_check.sh`
-Expected (gateway up): the existing health/report/attempt-log lines plus `sql report: <id>` and `sql artifact OK: …`. Gateway down → `UNREACHABLE` exit 1 (valid environment state, not a code failure).
+Expected (gateway up): the existing health/report/attempt-log lines plus `sql report: <id>` and `sql artifact OK: actual_result … `. Gateway down → `UNREACHABLE` exit 1 (a valid environment state, not a code failure).
 
 - [ ] **Step 3: Write the calibration runbook** — create `docs/superpowers/plans/2026-07-22-sql-calibration.md`:
 
@@ -1095,14 +1265,15 @@ Expected (gateway up): the existing health/report/attempt-log lines plus `sql re
 # SQL verification calibration (manual, gated)
 
 End-to-end proof of `verify_testcase.py --test-type sql` against an
-already-merged SQL TC — ground-truth check for the derivation path. Consumes
-builder capacity; run once with user confirmation.
+already-merged SQL TC — ground-truth for the derivation path and the first
+real `debug`-buildType SQL submission. Consumes builder capacity; run once
+with user confirmation.
 
 ## Inputs
-- An already-merged SQL TC with a known engine pair, e.g. CBRD-26900
-  (engine PR CUBRID/cubrid#7269). Fetch the case `.sql` and its committed
-  `answers/<name>.answer` from CUBRID/cubrid-testcases into a scratch dir
-  (`fetch_context.py get`).
+- An already-merged SQL TC whose answer actually CHANGED with a known engine
+  fix, e.g. CBRD-26900 (engine PR CUBRID/cubrid#7269). Fetch the case `.sql`
+  and its committed `answers/<name>.answer` from CUBRID/cubrid-testcases into
+  a scratch dir (`fetch_context.py get`, both `cases/` and `answers/`).
 
 ## Steps
 1. **Derivation ground-truth:** `verify_testcase.py derive-answer --test-type
@@ -1111,25 +1282,32 @@ builder capacity; run once with user confirmation.
    committed answer (newline-level differences tolerated per the server's
    comparison rules; intra-line whitespace must match). A mismatch is a real
    finding — investigate before trusting derivation.
-2. **Pre/post verify:** `verify_testcase.py run --test-type sql --script
-   <scratch>/cases/<name>.sql --issue CBRD-26900` → expect **VERIFIED**
-   (pre-fix answer mismatch/`fail`, post-fix `pass`). If the case is not a
-   behavior-changing fix (answer identical pre/post) it will be NOT-VERIFIED —
-   pick a TC whose answer actually changed with the fix.
+2. **Pre/post verify (debug build):** `verify_testcase.py run --test-type sql
+   --script <scratch>/cases/<name>.sql --issue CBRD-26900` → expect
+   **VERIFIED** (pre-fix answer mismatch/`fail`, post-fix `pass`). This is the
+   first real `buildType=debug` SQL run — confirm it builds and reports
+   normally. If the case's answer did NOT change with the fix it will be
+   NOT-VERIFIED — pick a TC whose answer actually changed.
 
 ## Record
-Capture the verdict block + report id. This validates SQL request assembly,
-artifact-based derivation, and the shared verdict path against ground truth.
+Capture the verdict block + report id. Validates SQL request assembly,
+artifact-based derivation, and the shared verdict path against ground truth,
+and confirms debug-buildType SQL works.
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Verify the runbook**
+
+Run: `grep -c "derive-answer --test-type sql\|VERIFIED\|debug" docs/superpowers/plans/2026-07-22-sql-calibration.md && python3 -c "import io; io.open('docs/superpowers/plans/2026-07-22-sql-calibration.md',encoding='utf-8').read(); print('ok')"`
+Expected: nonzero; `ok`.
+
+- [ ] **Step 5: Commit**
 
 ```bash
 cd ~/worktrees/skills-main
 chmod +x cubrid-testcase-creation-common/scripts/tests/live_check.sh
 git add cubrid-testcase-creation-common/scripts/tests/live_check.sh \
         docs/superpowers/plans/2026-07-22-sql-calibration.md
-git commit -m "verify: live SQL-report check + SQL calibration runbook"
+git commit -m "verify: live SQL-report/artifact check + SQL calibration runbook"
 ```
 
 ---
@@ -1138,5 +1316,5 @@ git commit -m "verify: live SQL-report check + SQL calibration runbook"
 
 - [ ] **Full unit suite**: `python3 -m unittest discover -s cubrid-testcase-creation-common/scripts/tests -v` — all pass.
 - [ ] **No bytecode staged**: `git status --porcelain | grep -E "\.pyc|__pycache__" || echo clean`.
-- [ ] **`--help` shows the new flags**: `python3 cubrid-testcase-creation-common/scripts/verify_testcase.py submit --help | grep -E "test-type|answer"`.
+- [ ] **`--help` shows the new flags**: `python3 cubrid-testcase-creation-common/scripts/verify_testcase.py submit --help | grep -E "test-type|answer"`; `... judge --help | grep test-type`.
 - [ ] **No watermark**: `base=$(git merge-base main HEAD); git log --format='%an %s' "$base"..HEAD | grep -iE "claude|anthropic|co-authored|🤖" && echo WATERMARK || echo clean`.
