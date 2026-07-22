@@ -15,16 +15,16 @@ Local CTP/csql/cubrid execution is allowed ONLY when
 including always on the QAHome development host — this skill is static-only
 and uses the verify handoff. `.answer` content is NEVER written by hand.
 
-Note: remote Builder-Tester verification (create-cubrid-shell-testcase) does
-not apply here — its executor runs shell cases only. SQL answer generation
-uses the local CTP path or the printed verify handoff.
-
 ## Path resolution
 
 - `$SKILL` = this skill's real directory (resolve the symlink).
 - `$COMMON` = `$SKILL/../cubrid-testcase-creation-common` — scripts
-  (`fetch_context.py`, `push_package.py`, `get_engine_pr.py`) and references
-  (`two-phase-protocol.md`, `verify-procedure.md`). Missing → STOP.
+  (`fetch_context.py`, `push_package.py`, `get_engine_pr.py`,
+  `verify_testcase.py`) and references (`two-phase-protocol.md`,
+  `verify-procedure.md`, `builder-tester-verification.md`). Missing → STOP.
+- `$BT` = `$BUILDER_TESTER_URL` or `http://192.168.2.154:8091` — remote
+  build+run verification gateway. Unreachable → skip remote verification and
+  fall through the ladder (step 7).
 - `$REVIEWER` = `~/.claude/skills/review-cubrid-testcase-pr` (resolved).
   Its `references/` are the self-review gate. Missing → STOP (gate is core).
 - `$RUBRIC` = `$CUBRID_REVIEW_RUBRIC_DIR` or `~/pr-review-mining/reviewer_rubric`;
@@ -79,10 +79,36 @@ Read `$COMMON/references/two-phase-protocol.md`, then:
    topic doc, and reviews `$work/package/` as if it were a PR bundle
    (Korean output, verdict line first). `NEEDS FIX` → drafter fixes →
    re-review; max 2 loops, then surface findings to the user.
-7. **Local answers (only if `CUBRID_TC_ALLOW_LOCAL_CTP=1`).** Follow
-   `$COMMON/references/verify-procedure.md` (SQL section): seed → run →
-   promote `.result` → re-run `Success:1`; fold real answers into the
-   package; re-run the gate once.
+7. **Runtime verification + answer generation (before the push gate).** Read
+   `$COMMON/references/builder-tester-verification.md`, then take the first
+   reachable rung. Process each package `.sql` file individually.
+   a. **Remote Builder-Tester (custom SQL)** — `python3
+      $COMMON/scripts/verify_testcase.py health` responds. For each `.sql`
+      WITHOUT a sibling `.queryPlan` sidecar:
+      - **Derive the answer:** `verify_testcase.py derive-answer --test-type
+        sql --script <cases/name.sql> --engine-pr <ref>` (dry-run, then `--yes`
+        on confirmation, announcing it consumes shared builder capacity). Get
+        the printed answer approved by the user; it is written to
+        `answers/<name>.answer`.
+      - **Verify:** `verify_testcase.py run --test-type sql --script
+        <cases/name.sql> --engine-pr <ref>` (dry-run first; `--yes` after
+        confirmation). VERIFIED → proceed. NOT-VERIFIED/FLAKY → diagnose (the
+        printed `answer_diff` helps) and fix, re-entering steps 5–6; do not
+        push a case that fails to reproduce or is flaky. INCONCLUSIVE →
+        builder/env issue; report and fall to rung b/c. `--special-case`
+        applies as for shell.
+      Files WITH a `.queryPlan` sidecar cannot be derived/verified in custom
+      mode (no sidecar channel; the tool refuses them) — leave their answers
+      empty and route them to rung b/c, noting it in the render. Fold each
+      verdict block into the render (step 8) and the PR body. All non-sidecar
+      files must be VERIFIED before the push.
+   b. **Local CTP** — only if `CUBRID_TC_ALLOW_LOCAL_CTP=1`: follow
+      `$COMMON/references/verify-procedure.md` (SQL section): seed → run →
+      promote `.result` → re-run `Success:1`; fold real answers into the
+      package; re-run the gate once.
+   c. **Printed handoff** — neither reachable: seed empty answers, print the
+      verify handoff from `two-phase-protocol.md`, and STOP (Phase 2 resumes
+      with supplied answers).
 8. **Render + push gate.** Show the package, placement rationale, coverage
    map, KB checklist satisfaction. On explicit user confirmation:
    `push_package.py push --upstream CUBRID/cubrid-testcases --fork-owner junsklee
@@ -98,7 +124,10 @@ Read `$COMMON/references/two-phase-protocol.md`, then:
    show the intended `Error:-NNN`; no timestamps/OIDs/hashes/raw random
    values; row counts plausible vs setup; not encoding unfixed behavior
    (answer-fix vs bug-report per review-core.md). Suspicious → show the
-   user the concern; do not commit silently.
+   user the concern; do not commit silently. Answers already derived on the
+   remote rung are byte-exact from a real run (only confirm the approved
+   content landed); apply the full semantic validation to hand-supplied
+   answers.
 2. **Gate re-run** over the complete package (sql + real answers).
 3. **Commit + PR gate.** On explicit user confirmation of the validated
    answers: `push_package.py push … --update --yes` (answers only). Then

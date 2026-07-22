@@ -138,18 +138,27 @@ Save the result to `$work/review.md`.
 Show `$work/review.md` verbatim in the session. Then ask the user explicitly
 whether to post. Do NOT post without a clear yes in this conversation.
 
-### Optional: runtime verification of a shell TC PR (ask first)
+### Optional: runtime verification of a shell or SQL TC PR (ask first)
 
-For a shell test-case PR only, offer — never run unprompted — a remote
+For a shell or SQL test-case PR, offer — never run unprompted — a remote
 Builder-Tester check. It spends shared cluster capacity, so ask the user
 first, and skip silently if `$COMMON` is absent or the gateway is unreachable.
 On agreement, read `$COMMON/references/builder-tester-verification.md`, fetch
-the PR's shell package into a scratch dir with
-`python3 $COMMON/scripts/fetch_context.py get <owner/repo> <case-dir paths> --out $scratch --ref <pr-head-sha>`,
-then run against the PR head's entry script and the issue's engine PR:
+the PR's package into a scratch dir with `python3
+$COMMON/scripts/fetch_context.py get <owner/repo> <paths> --out $scratch --ref
+<pr-head-sha>` — for a SQL PR pass BOTH the `cases/` and sibling `answers/`
+paths so the committed `.answer` is present. Then run against the PR head's
+entry file and the issue's engine PR:
 
-`python3 $COMMON/scripts/verify_testcase.py run --script <fetched entry.sh>
---engine-pr <engine ref>` (dry-run first, `--yes` after the user confirms).
+- **Shell TC PR:** `python3 $COMMON/scripts/verify_testcase.py run
+  --script <fetched cases/name.sh> --engine-pr <engine ref>`.
+- **SQL TC PR:** `python3 $COMMON/scripts/verify_testcase.py run --test-type
+  sql --script <fetched cases/name.sql> --engine-pr <engine ref>` — the PR's
+  committed `answers/<name>.answer` is used as `customSqlAnswer` (no
+  derivation needed; the answer is in the PR). Skip a `.sql` with a
+  `.queryPlan` sidecar (custom SQL mode cannot verify it) with a note.
+
+(dry-run first, `--yes` after the user confirms.)
 
 The script travels in the custom-script request, so a fork branch is fine.
 Fold the verdict block into the review as supporting evidence: VERIFIED

@@ -526,5 +526,321 @@ class TestWaitResilientToStatusBlip(unittest.TestCase):
         self.assertEqual(vt._wait("req_9", 60)["id"], "req_9")
 
 
+class TestBuildSqlRequest(unittest.TestCase):
+    def test_shape_and_defaults(self):
+        req = vt.build_sql_request("select 1;\n", "===\n1\n", ["aaa", "bbb"],
+                                   ["h:8090"], callback_url="http://cb/callback")
+        self.assertEqual(req["testType"], "sql")
+        self.assertEqual(req["customSqlScript"], "select 1;\n")
+        self.assertEqual(req["customSqlAnswer"], "===\n1\n")
+        self.assertEqual(req["commits"], ["aaa", "bbb"])
+        self.assertEqual(req["minRuns"], 1)
+        self.assertEqual(req["maxRuns"], 1)
+        self.assertEqual(req["buildType"], "debug")
+        self.assertEqual(req["commitBuildMode"], "checkout")
+        self.assertNotIn("tests", req)
+        self.assertNotIn("customShellScript", req)
+        self.assertNotIn("customAttachments", req)
+
+    def test_empty_answer_raises(self):
+        with self.assertRaises(ValueError):
+            vt.build_sql_request("select 1;\n", "", ["aaa"], ["h:8090"])
+
+
+class TestResolveAnswerPath(unittest.TestCase):
+    def test_cases_sibling_answers(self):
+        p = vt.resolve_answer_path("/x/sql/_13_issues/_26_2h/cases/cbrd_1.sql")
+        self.assertEqual(p, "/x/sql/_13_issues/_26_2h/answers/cbrd_1.answer")
+
+    def test_non_cases_alongside(self):
+        p = vt.resolve_answer_path("/tmp/scratch/cbrd_1.sql")
+        self.assertEqual(p, "/tmp/scratch/cbrd_1.answer")
+
+
+class TestQueryPlanSidecar(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.sql = os.path.join(self.d, "cbrd_1.sql")
+        open(self.sql, "w").close()
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def test_absent(self):
+        self.assertFalse(vt.has_queryplan_sidecar(self.sql))
+
+    def test_present(self):
+        open(os.path.join(self.d, "cbrd_1.queryPlan"), "w").close()
+        self.assertTrue(vt.has_queryplan_sidecar(self.sql))
+
+
+class TestFindArtifacts(unittest.TestCase):
+    REPORT = {"results": [{"commit": "aa136ea1111", "attemptLogMetadata": [
+        {"attempt": 1, "logFileName": "sql_aa136ea_x.log", "status": "fail"},
+        {"attempt": 1, "logFileName": "sql_actual_aa136ea_x.result", "artifactType": "actual_result"},
+        {"attempt": 1, "logFileName": "sql_diff_aa136ea_x.diff", "artifactType": "answer_diff"},
+    ]}]}
+
+    def test_selects_by_type_and_commit(self):
+        self.assertEqual(vt.find_artifacts(self.REPORT, "aa136ea", "actual_result"),
+                         ["sql_actual_aa136ea_x.result"])
+        self.assertEqual(vt.find_artifacts(self.REPORT, "aa136ea1111", "answer_diff"),
+                         ["sql_diff_aa136ea_x.diff"])
+
+    def test_missing_type(self):
+        self.assertEqual(vt.find_artifacts(self.REPORT, "aa136ea", "core_list"), [])
+
+    def test_empty_commit_matches_nothing(self):
+        self.assertEqual(vt.find_artifacts(self.REPORT, "", "actual_result"), [])
+
+
+class TestReportTestType(unittest.TestCase):
+    def test_top_level(self):
+        self.assertEqual(vt.report_test_type({"testType": "sql", "results": []}), "sql")
+
+    def test_from_results(self):
+        self.assertEqual(vt.report_test_type({"results": [{"testType": "sql"}]}), "sql")
+
+    def test_default_shell(self):
+        self.assertEqual(vt.report_test_type({"results": [{}]}), "shell")
+
+
+class TestElideSqlAndLogsFilter(unittest.TestCase):
+    def test_elides_sql_fields_only_when_present(self):
+        req = vt.build_sql_request("select 1;\n", "===\n1\n", ["a"], ["h:1"],
+                                   callback_url="http://c/callback")
+        e = vt.elide_payload(req)
+        self.assertIn("sha256:", e["customSqlScript"])
+        self.assertIn("sha256:", e["customSqlAnswer"])
+        self.assertNotIn("customShellScript", e)   # not spuriously added
+        self.assertEqual(e["commits"], ["a"])
+
+    def test_results_by_commit_excludes_artifacts_from_logs(self):
+        by = vt.results_by_commit(TestFindArtifacts.REPORT)
+        self.assertEqual(by["aa136ea1111"]["attempts"], ["fail"])
+        self.assertEqual(by["aa136ea1111"]["logs"], ["sql_aa136ea_x.log"])
+
+
+class TestTestTypeOf(unittest.TestCase):
+    def _ns(self, **k):
+        import argparse
+        return argparse.Namespace(**k)
+
+    def test_explicit_wins(self):
+        self.assertEqual(vt.test_type_of(self._ns(test_type="sql", script="x.sh")), "sql")
+
+    def test_inferred_from_sql_suffix(self):
+        self.assertEqual(vt.test_type_of(self._ns(test_type=None, script="a/b.sql")), "sql")
+
+    def test_defaults_shell(self):
+        self.assertEqual(vt.test_type_of(self._ns(test_type=None, script="a/b.sh")), "shell")
+
+
+class TestResolveRuns(unittest.TestCase):
+    def _ns(self, mn, mx):
+        import argparse
+        return argparse.Namespace(min_runs=mn, max_runs=mx)
+
+    def test_sql_defaults_1_1(self):
+        a = self._ns(None, None); vt.resolve_runs(a, "sql")
+        self.assertEqual((a.min_runs, a.max_runs), (1, 1))
+
+    def test_shell_defaults_2_2(self):
+        a = self._ns(None, None); vt.resolve_runs(a, "shell")
+        self.assertEqual((a.min_runs, a.max_runs), (2, 2))
+
+    def test_explicit_preserved(self):
+        a = self._ns(3, 5); vt.resolve_runs(a, "sql")
+        self.assertEqual((a.min_runs, a.max_runs), (3, 5))
+
+
+class TestShowSqlDiff(unittest.TestCase):
+    def setUp(self):
+        self._orig = vt.bt_get_text
+
+    def tearDown(self):
+        vt.bt_get_text = self._orig
+
+    REPORT = {"testType": "sql", "results": [{"commit": "POSTsha", "attemptLogMetadata": [
+        {"attempt": 1, "logFileName": "sql_POST_x.log", "status": "fail"},
+        {"attempt": 1, "logFileName": "sql_diff_POST_x.diff", "artifactType": "answer_diff"}]}]}
+
+    def _judged(self, verdict):
+        return {"verdict": verdict, "pre_sha": "PREsha", "post_sha": "POSTsha"}
+
+    def test_prints_diff_on_not_verified(self):
+        calls = []
+        vt.bt_get_text = lambda path, **k: calls.append(path) or "DIFF-TEXT-HERE"
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            vt.show_sql_diff(self.REPORT, self._judged("NOT-VERIFIED"), "req_1")
+        self.assertIn("DIFF-TEXT-HERE", buf.getvalue())
+        self.assertTrue(calls)
+
+    def test_verified_fetches_nothing(self):
+        calls = []
+        vt.bt_get_text = lambda path, **k: calls.append(path) or "x"
+        vt.show_sql_diff(self.REPORT, self._judged("VERIFIED"), "req_1")
+        self.assertEqual(calls, [])
+
+    def test_fetch_failure_is_soft(self):
+        def boom(path, **k):
+            raise vt.BuilderTesterError("blip")
+        vt.bt_get_text = boom
+        # must NOT raise — the verdict must still be printable afterwards
+        vt.show_sql_diff(self.REPORT, self._judged("NOT-VERIFIED"), "req_1")
+
+
+class TestCliSqlDryRun(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.cases = os.path.join(self.d, "sql", "_13_issues", "_26_2h", "cases")
+        self.answers = os.path.join(self.d, "sql", "_13_issues", "_26_2h", "answers")
+        os.makedirs(self.cases); os.makedirs(self.answers)
+        self.sql = os.path.join(self.cases, "cbrd_1.sql")
+        with open(self.sql, "w") as fh:
+            fh.write("select 1;\n")
+        self.ans = os.path.join(self.answers, "cbrd_1.answer")
+        with open(self.ans, "w") as fh:
+            fh.write("===\n1\n")
+        self.vt_path = os.path.join(os.path.dirname(__file__), "..", "verify_testcase.py")
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def _run(self, *extra):
+        env = dict(os.environ); env["BUILDER_TESTER_URL"] = "http://127.0.0.1:1"
+        return subprocess.run([sys.executable, self.vt_path, "submit", "--script", self.sql,
+                               "--pre", "AAA", "--post", "BBB"] + list(extra),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+
+    def test_sql_submit_dry_run(self):
+        out = self._run(); text = out.stdout.decode("utf-8")
+        self.assertEqual(out.returncode, 0, text)
+        self.assertIn("[dry-run]", text)
+        self.assertIn('"testType": "sql"', text)
+        self.assertIn("customSqlAnswer", text)
+
+    def test_missing_answer_errors(self):
+        os.remove(self.ans)
+        out = self._run()
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("derive-answer", out.stdout.decode("utf-8"))
+
+    def test_empty_answer_errors_not_traceback(self):
+        open(self.ans, "w").close()  # exists but 0 bytes
+        out = self._run()
+        self.assertNotEqual(out.returncode, 0)
+        text = out.stdout.decode("utf-8")
+        self.assertIn("derive-answer", text)
+        self.assertNotIn("Traceback", text)
+
+    def test_queryplan_sidecar_blocks_run(self):
+        open(os.path.join(self.cases, "cbrd_1.queryPlan"), "w").close()
+        out = self._run()
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("queryPlan", out.stdout.decode("utf-8"))
+
+
+class TestDeriveAnswerSql(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.cases = os.path.join(self.d, "cases"); os.makedirs(self.cases)
+        self.sql = os.path.join(self.cases, "cbrd_1.sql")
+        with open(self.sql, "w") as fh:
+            fh.write("select 1;\n")
+        self.vt_path = os.path.join(os.path.dirname(__file__), "..", "verify_testcase.py")
+        self._req, self._txt, self._wait = vt.bt_request, vt.bt_get_text, vt._wait
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+        vt.bt_request, vt.bt_get_text, vt._wait = self._req, self._txt, self._wait
+
+    def test_dry_run_shows_placeholder_submit(self):
+        env = dict(os.environ); env["BUILDER_TESTER_URL"] = "http://127.0.0.1:1"
+        out = subprocess.run(
+            [sys.executable, self.vt_path, "derive-answer", "--test-type", "sql",
+             "--script", self.sql, "--post", "BBB"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+        text = out.stdout.decode("utf-8")
+        self.assertEqual(out.returncode, 0, text)
+        self.assertIn("[dry-run]", text)
+        self.assertIn('"testType": "sql"', text)
+
+    def test_queryplan_sidecar_blocks(self):
+        open(os.path.join(self.cases, "cbrd_1.queryPlan"), "w").close()
+        env = dict(os.environ); env["BUILDER_TESTER_URL"] = "http://127.0.0.1:1"
+        out = subprocess.run(
+            [sys.executable, self.vt_path, "derive-answer", "--test-type", "sql",
+             "--script", self.sql, "--post", "BBB"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("queryPlan", out.stdout.decode("utf-8"))
+
+    def test_success_writes_answer_from_actual_result(self):
+        # in-process (not subprocess) so we can monkeypatch the network layer
+        import argparse
+        report = {"testType": "sql", "results": [{"commit": "BBBsha", "status": "fail",
+            "attemptLogMetadata": [
+                {"attempt": 1, "logFileName": "sql_BBB_x.log", "status": "fail"},
+                {"attempt": 1, "logFileName": "sql_actual_BBB_x.result",
+                 "artifactType": "actual_result"}]}]}
+        vt.bt_request = lambda path, **k: {"status": "accepted", "taskId": "req_D"}
+        vt._wait = lambda tid, timeout: report
+        vt.bt_get_text = lambda path, **k: "===\n1\n"
+        args = argparse.Namespace(script=self.sql, test_type="sql", answer=None,
+                                  engine_pr=None, issue=None, post="BBBsha",
+                                  build_type="debug", timeout=60, yes=True)
+        vt._derive_answer_sql(args)
+        out_path = os.path.join(self.d, "answers", "cbrd_1.answer")
+        self.assertTrue(os.path.exists(out_path))
+        with open(out_path) as fh:
+            self.assertEqual(fh.read(), "===\n1\n")
+
+    def test_no_artifact_or_not_fail_errors(self):
+        import argparse
+        report = {"testType": "sql", "results": [{"commit": "BBBsha", "status": "pass",
+            "attemptLogMetadata": [{"attempt": 1, "logFileName": "sql_BBB_x.log", "status": "pass"}]}]}
+        vt.bt_request = lambda path, **k: {"status": "accepted", "taskId": "req_D"}
+        vt._wait = lambda tid, timeout: report
+        args = argparse.Namespace(script=self.sql, test_type="sql", answer=None,
+                                  engine_pr=None, issue=None, post="BBBsha",
+                                  build_type="debug", timeout=60, yes=True)
+        with self.assertRaises(SystemExit):
+            vt._derive_answer_sql(args)
+
+    def test_byte_exact_write_preserves_cr(self):
+        import argparse
+        report = {"testType": "sql", "results": [{"commit": "BBBsha", "status": "fail",
+            "attemptLogMetadata": [
+                {"attempt": 1, "logFileName": "sql_BBB_x.log", "status": "fail"},
+                {"attempt": 1, "logFileName": "sql_actual_BBB_x.result",
+                 "artifactType": "actual_result"}]}]}
+        vt.bt_request = lambda path, **k: {"status": "accepted", "taskId": "req_D"}
+        vt._wait = lambda tid, timeout: report
+        vt.bt_get_text = lambda path, **k: "a\r\nb\n"
+        args = argparse.Namespace(script=self.sql, test_type="sql", answer=None,
+                                  engine_pr=None, issue=None, post="BBBsha",
+                                  build_type="debug", timeout=60, yes=True)
+        vt._derive_answer_sql(args)
+        out_path = os.path.join(self.d, "answers", "cbrd_1.answer")
+        with open(out_path, "rb") as fh:
+            self.assertEqual(fh.read(), b"a\r\nb\n")
+
+    def test_fail_but_no_artifact_errors(self):
+        import argparse
+        report = {"testType": "sql", "results": [{"commit": "BBBsha", "status": "fail",
+            "attemptLogMetadata": [{"attempt": 1, "logFileName": "sql_BBB_x.log",
+                                    "status": "fail"}]}]}
+        vt.bt_request = lambda path, **k: {"status": "accepted", "taskId": "req_D"}
+        vt._wait = lambda tid, timeout: report
+        args = argparse.Namespace(script=self.sql, test_type="sql", answer=None,
+                                  engine_pr=None, issue=None, post="BBBsha",
+                                  build_type="debug", timeout=60, yes=True)
+        with self.assertRaises(SystemExit):
+            vt._derive_answer_sql(args)
+
+
 if __name__ == "__main__":
     unittest.main()

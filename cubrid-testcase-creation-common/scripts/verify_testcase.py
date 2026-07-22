@@ -88,6 +88,66 @@ def build_request(script_text, commits, worker_ip_list, attachments=None,
     return req
 
 
+def build_sql_request(script_text, answer_text, commits, worker_ip_list,
+                      run_mode="fixed-runs", min_runs=1, max_runs=1,
+                      build_type="debug", callback_url=None,
+                      commit_build_mode="checkout"):
+    if not answer_text:
+        raise ValueError(
+            "customSqlAnswer must be non-empty (the builder 400s without it); "
+            "derive it first with 'derive-answer --test-type sql'")
+    return {
+        "commits": list(commits),
+        "testType": "sql",
+        "customSqlScript": script_text,
+        "customSqlAnswer": answer_text,
+        "workerIps": list(worker_ip_list),
+        "runMode": run_mode, "minRuns": min_runs, "maxRuns": max_runs,
+        "buildType": build_type, "commitBuildMode": commit_build_mode,
+        "callbackUrl": callback_url or (builder_url() + "/callback"),
+    }
+
+
+def resolve_answer_path(script_path):
+    """Sibling answers/<name>.answer for a cases/<name>.sql; else alongside."""
+    d = os.path.dirname(os.path.abspath(script_path))
+    stem = os.path.splitext(os.path.basename(script_path))[0]
+    if os.path.basename(d) == "cases":
+        return os.path.join(os.path.dirname(d), "answers", stem + ".answer")
+    return os.path.join(d, stem + ".answer")
+
+
+def has_queryplan_sidecar(script_path):
+    """True if a sibling <name>.queryPlan exists next to the .sql (plan test)."""
+    stem = os.path.splitext(os.path.abspath(script_path))[0]
+    return os.path.exists(stem + ".queryPlan")
+
+
+def find_artifacts(report, commit_sha, artifact_type):
+    """logFileNames of artifact entries of the given type for the commit."""
+    if not commit_sha:
+        return []
+    out = []
+    for r in report.get("results", []):
+        c = r.get("commit") or ""
+        if not (c.startswith(commit_sha[:7]) or commit_sha.startswith(c[:7] or "x")):
+            continue
+        for a in r.get("attemptLogMetadata", []):
+            if a.get("artifactType") == artifact_type and a.get("logFileName"):
+                out.append(a["logFileName"])
+    return out
+
+
+def report_test_type(report):
+    tt = report.get("testType")
+    if tt:
+        return tt
+    for r in report.get("results", []):
+        if r.get("testType"):
+            return r["testType"]
+    return "shell"
+
+
 def parse_submit_response(resp):
     task_id = resp.get("taskId")
     if resp.get("status") == "error" or not task_id:
@@ -114,7 +174,8 @@ def results_by_commit(report):
             continue
         meta = r.get("attemptLogMetadata", [])
         attempts = [a.get("status") for a in meta if a.get("status")]
-        logs = [a.get("logFileName") for a in meta if a.get("logFileName")]
+        logs = [a.get("logFileName") for a in meta
+                if a.get("logFileName") and not a.get("artifactType")]
         if not attempts and r.get("status"):
             attempts = [r.get("status")]
         entry = out.setdefault(commit, {"attempts": [], "logs": []})
@@ -388,7 +449,9 @@ def elide_payload(req):
         b = s.encode("utf-8")
         return "<%d bytes sha256:%s>" % (len(b), hashlib.sha256(b).hexdigest()[:12])
     safe = dict(req)
-    safe["customShellScript"] = mark(req.get("customShellScript", ""))
+    for k in ("customShellScript", "customSqlScript", "customSqlAnswer"):
+        if k in req:
+            safe[k] = mark(req[k])
     if "customAttachments" in req:
         safe["customAttachments"] = [
             {"targetPath": a["targetPath"], "contentBase64": mark(a["contentBase64"])}
@@ -442,12 +505,67 @@ def _post_build(req):
     return parse_submit_response(bt_request("/api/builder/build", method="POST", data=req))
 
 
-def _submit(script_text, entry_abs, commits, args, yes):
-    case_dir = os.path.dirname(os.path.abspath(entry_abs))
-    atts = collect_attachments(case_dir, entry_abs)
-    req = build_request(script_text, commits, worker_ips(), attachments=atts,
-                        run_mode=args.run_mode, min_runs=args.min_runs,
-                        max_runs=args.max_runs, build_type=args.build_type)
+def test_type_of(args):
+    if getattr(args, "test_type", None):
+        return args.test_type
+    script = getattr(args, "script", None)
+    if script and script.endswith(".sql"):
+        return "sql"
+    return "shell"
+
+
+def resolve_runs(args, test_type):
+    lo, hi = (1, 1) if test_type == "sql" else (2, 2)
+    if getattr(args, "min_runs", None) is None:
+        args.min_runs = lo
+    if getattr(args, "max_runs", None) is None:
+        args.max_runs = hi
+
+
+def show_sql_diff(report, judged, task_id):
+    """Best-effort: on a non-VERIFIED SQL run, print the failing commit's
+    answer_diff. Never raises — a fetch blip must not swallow the verdict."""
+    if report_test_type(report) != "sql" or judged.get("verdict") == "VERIFIED":
+        return
+    for sha in (judged.get("post_sha"), judged.get("pre_sha")):
+        diffs = find_artifacts(report, sha, "answer_diff")
+        if not diffs:
+            continue
+        try:
+            text = bt_get_text("/api/log/%s/tests/%s" % (task_id, diffs[0]))
+        except BuilderTesterError as e:
+            print("  (could not fetch answer_diff: %s)" % e)
+            return
+        if text:
+            print("\n--- answer_diff (%s) ---" % sha[:7])
+            print(text[:4000])
+        return
+
+
+def _submit(script_text, entry_abs, commits, args, yes, test_type):
+    entry_abs = os.path.abspath(entry_abs)
+    if test_type == "sql":
+        if has_queryplan_sidecar(entry_abs):
+            sys.exit("this case has a .queryPlan sidecar — its answer contains plan output "
+                     "that custom SQL mode cannot reproduce; verify it on a local CTP host")
+        answer_path = getattr(args, "answer", None) or resolve_answer_path(entry_abs)
+        try:
+            answer_text = _load_script(answer_path)
+        except (IOError, OSError):
+            answer_text = None
+        if not answer_text:
+            sys.exit("no usable answer at %s (missing or empty) — derive it first: "
+                     "verify_testcase.py derive-answer --test-type sql --script %s "
+                     "(--engine-pr/--issue/--post)" % (answer_path, entry_abs))
+        req = build_sql_request(script_text, answer_text, commits, worker_ips(),
+                                run_mode=args.run_mode, min_runs=args.min_runs,
+                                max_runs=args.max_runs, build_type=args.build_type)
+    else:
+        case_dir = os.path.dirname(entry_abs)
+        atts = collect_attachments(case_dir, entry_abs)
+        req = build_request(script_text, commits, worker_ips(), attachments=atts,
+                            run_mode=args.run_mode, min_runs=args.min_runs,
+                            max_runs=args.max_runs, build_type=args.build_type)
     if not yes:
         print("[dry-run] POST %s/api/builder/build" % builder_url())
         print(json.dumps(elide_payload(req), indent=2))
@@ -525,8 +643,10 @@ def _print_and_exit(judged, task_id):
 
 
 def cmd_submit(args):
+    tt = test_type_of(args)
+    resolve_runs(args, tt)
     commits, _pre, _post = _resolve_and_echo(args)
-    _submit(_load_script(args.script), args.script, commits, args, args.yes)
+    _submit(_load_script(args.script), args.script, commits, args, args.yes, tt)
 
 
 def cmd_wait(args):
@@ -540,21 +660,25 @@ def cmd_judge(args):
     if report is None:
         _print_and_exit(inconclusive("no report found for %s" % args.task_id, pre, post),
                         args.task_id)
-    _print_and_exit(judge_matrix(results_by_commit(report), pre, post, args.special_case),
-                    args.task_id)
+    judged = judge_matrix(results_by_commit(report), pre, post, args.special_case)
+    show_sql_diff(report, judged, args.task_id)
+    _print_and_exit(judged, args.task_id)
 
 
 def cmd_run(args):
+    tt = test_type_of(args)
+    resolve_runs(args, tt)
     commits, pre, post = _resolve_and_echo(args)
-    task_id = _submit(_load_script(args.script), args.script, commits, args, args.yes)
+    task_id = _submit(_load_script(args.script), args.script, commits, args, args.yes, tt)
     if task_id is None:
         return  # dry-run
     try:
         report = _wait(task_id, args.timeout)
     except BuilderTesterError as e:
         _print_and_exit(inconclusive(str(e), pre, post), task_id)
-    _print_and_exit(judge_matrix(results_by_commit(report), pre, post, args.special_case),
-                    task_id)
+    judged = judge_matrix(results_by_commit(report), pre, post, args.special_case)
+    show_sql_diff(report, judged, task_id)
+    _print_and_exit(judged, task_id)
 
 
 def _derive_meta(report, post_sha):
@@ -571,7 +695,7 @@ def _derive_meta(report, post_sha):
     return None
 
 
-def cmd_derive_answer(args):
+def _derive_answer_shell(args):
     entry_abs = os.path.abspath(args.script)
     script_text = _load_script(args.script)
     if not has_compare_calls(script_text):
@@ -623,6 +747,61 @@ def cmd_derive_answer(args):
           "behavior before using it. It was machine-derived from a real run.")
 
 
+def _derive_answer_sql(args):
+    entry_abs = os.path.abspath(args.script)
+    if has_queryplan_sidecar(entry_abs):
+        sys.exit("this case has a .queryPlan sidecar — plan output cannot be captured via "
+                 "custom SQL mode; derive its answer on a local CTP host (verify-procedure.md)")
+    script_text = _load_script(args.script)
+    answer_path = getattr(args, "answer", None) or resolve_answer_path(entry_abs)
+    pair, owner, repo = _engine_pair_and_owner(args)
+    post = args.post or (pair[1] if pair else None)
+    if not post:
+        sys.exit("need a post-fix commit: pass --post SHA or --engine-pr/--issue REF")
+    print("Deriving SQL answer from post-fix build:")
+    _echo_pair(owner, repo, None, post)
+    req = build_sql_request(script_text, "PLACEHOLDER\n", [post], worker_ips(),
+                            run_mode="fixed-runs", min_runs=1, max_runs=1,
+                            build_type=args.build_type)
+    if not args.yes:
+        print("[dry-run] would submit (post-only, placeholder answer) to derive the .answer")
+        print(json.dumps(elide_payload(req), indent=2))
+        print("[dry-run] pass --yes to submit")
+        return
+    task_id = _post_build(req)
+    print("taskId: %s" % task_id)
+    report = _wait(task_id, args.timeout)
+    status = (_lookup(results_by_commit(report), post).get("attempts") or ["<none>"])[0]
+    arts = find_artifacts(report, post, "actual_result")
+    if status != "fail" or not arts:
+        sys.exit("cannot derive: post-fix status=%s, actual_result artifact %s. A wrong "
+                 "placeholder answer should yield status=fail with an actual_result artifact; "
+                 "a syntax error/timeout gives execution_error (no artifact). Fix the draft and "
+                 "retry. Inspect report %s"
+                 % (status, "present" if arts else "missing", task_id))
+    content = bt_get_text("/api/log/%s/tests/%s" % (task_id, arts[0]))
+    if not content:
+        sys.exit("actual_result artifact %s was empty; inspect report %s" % (arts[0], task_id))
+    answers_dir = os.path.dirname(answer_path)
+    if answers_dir and not os.path.isdir(answers_dir):
+        os.makedirs(answers_dir)
+    # newline="" keeps the run's bytes exact (the server compares intra-line whitespace).
+    with open(answer_path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(content)
+    print("\n=== derived answer -> %s (%d bytes) ===" % (answer_path, len(content)))
+    print(content)
+    print("=== end answer ===")
+    print("\nREVIEW REQUIRED: confirm this .answer matches the JIRA to-be behavior before "
+          "using it. It was machine-derived from a real post-fix run.")
+
+
+def cmd_derive_answer(args):
+    if test_type_of(args) == "sql":
+        _derive_answer_sql(args)
+    else:
+        _derive_answer_shell(args)
+
+
 def cmd_health(args):
     ok = False
     for ep in ("/health", "/api/builder/health", "/api/reports?pageSize=1"):
@@ -644,11 +823,19 @@ def _add_commit_args(p):
                    help="submit only the post-fix commit")
 
 
+def _add_sql_type_args(p):
+    p.add_argument("--test-type", choices=["shell", "sql"], default=None,
+                   help="default shell; inferred sql from a .sql --script")
+    p.add_argument("--answer", default=None,
+                   help="SQL only: answer file (default: sibling answers/<name>.answer)")
+
+
 def _add_run_args(p):
     p.add_argument("--run-mode", default="fixed-runs")
-    p.add_argument("--min-runs", type=int, default=2)
-    p.add_argument("--max-runs", type=int, default=2)
+    p.add_argument("--min-runs", type=int, default=None)
+    p.add_argument("--max-runs", type=int, default=None)
     p.add_argument("--build-type", default="debug")
+    _add_sql_type_args(p)
     p.add_argument("--special-case", default=None,
                    choices=["core-dump", "flaky-repro", "feature"],
                    help="waive the pre-fix-must-fail expectation")
@@ -675,6 +862,8 @@ def main():
     _add_commit_args(pj)
     pj.add_argument("--special-case", default=None,
                     choices=["core-dump", "flaky-repro", "feature"])
+    pj.add_argument("--test-type", choices=["shell", "sql"], default=None,
+                    help="accepted for symmetry; judge auto-detects from the report")
 
     prn = sub.add_parser("run")
     prn.add_argument("--script", required=True)
@@ -690,6 +879,7 @@ def main():
     pd.add_argument("--build-type", default="debug")
     pd.add_argument("--timeout", type=int, default=10800)
     pd.add_argument("--yes", action="store_true")
+    _add_sql_type_args(pd)
 
     sub.add_parser("health")
 

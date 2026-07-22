@@ -12,6 +12,13 @@ host.
 > when the Builder-Tester gateway is unreachable and
 > `CUBRID_TC_ALLOW_LOCAL_CTP=1` is set.
 
+> For SQL cases, prefer remote Builder-Tester verification too
+> (`builder-tester-verification.md`, `--test-type sql`) — it derives the
+> `.answer` from a real run and proves pre-fix fail / post-fix pass without a
+> local CTP install. Use the local SQL runbook below only when the gateway is
+> unreachable and `CUBRID_TC_ALLOW_LOCAL_CTP=1`, or for `.queryPlan`-sidecar
+> cases (which custom SQL mode cannot verify).
+
 ## Preconditions
 
 - CTP at `$CTP_HOME` (env → `~/CTP` → `~/cubrid-testtools/CTP`). Sanity:

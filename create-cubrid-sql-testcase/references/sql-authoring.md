@@ -9,26 +9,40 @@ self-review gate checks them with the reviewer doctrine afterwards.
   basename. NEVER write answer content by hand — CTP generates it.
 - Optimizer/plan test → also an EMPTY `cases/<name>.queryPlan` sidecar
   (case-sensitive extension).
-- Bug fix: `sql/_13_issues/_{yy}_{1|2}h/cases/…`; release-targeted issue:
-  `sql/_{no}_{release_code}/cbrd_XXXXX/cases/…` — match where sibling
-  issues of the same release actually landed (release targeting beats JIRA
-  creation date). Multiple files per issue share ONE `cases/`+`answers/`
-  pair with suffixes (`cbrd_XXXXX_select.sql`) — never one subdir per file.
+- Bug fix: `sql/_13_issues/_{yy}_{1|2}h/cases/cbrd_XXXXX[_n|_keyword].sql`
+  (shared `cases/`+`answers/` for the bucket; simple repros are a single
+  `cbrd_XXXXX.sql`). Release feature: `sql/_{no}_{release_code}/cbrd_XXXXX/
+  cases/<NN_feature-description>.sql` — its own per-issue folder with
+  descriptive, numbered file names (the current `_36_guava` convention for
+  issues needing several independent test angles). Match where sibling issues
+  of the same release actually landed (release targeting beats JIRA creation
+  date). Generic regression-suite dirs legitimately use plain descriptive
+  names with no CBRD number.
 - Supplementing existing tests for the same CBRD → keep their naming scheme.
 
 ## File structure
 
-- Header block first:
-  `/** This test case verifies CBRD-XXXXX: <title> */` plus a numbered
-  `Coverage:` list that matches what the file actually tests.
-- `evaluate 'Case N: description';` before each scenario, numbered
-  sequentially, captions truthful. 3–10 scenarios per file is the norm.
+- Header block first (current-suite convention, confirmed 2026-07 in every
+  recent `_36_guava` feature case): a `/** … */` block opening
+  `This test case verifies CBRD-XXXXX: <title>` plus a numbered `Coverage:`
+  list that matches what the file actually tests. Legacy `_13_issues` cases
+  often have no header — for NEW work always include one. A `-- ==== CBRD-…`
+  banner is an accepted alternative.
+- Label each scenario with `evaluate '<label>';` before it, numbered
+  sequentially, captions truthful (they land in the `.answer` for
+  traceability). The label wording is not standardized — recent cases use
+  `[TEST N] <desc>` or `[N] <desc>` as often as `Case N:`; any consistent,
+  descriptive scheme is fine. 3–10 scenarios per file is the norm.
 - Setup at top, cleanup at bottom. `DROP TABLE IF EXISTS t;` before every
   `CREATE TABLE` (drop children before parents when FKs exist).
 - **The suite shares ONE database.** Undo everything at the end: drop every
-  table/view/serial/trigger/procedure, `deallocate prepare` every
-  `prepare`, `drop variable` every session variable, restore every
-  `SET SYSTEM PARAMETERS` to its original value.
+  table/view/serial/trigger/procedure, `deallocate prepare` every `prepare`,
+  `drop variable` every session variable, restore every `SET SYSTEM
+  PARAMETERS` to its original value. `DROP ... IF EXISTS` is required at CREATE
+  time (re-run safety); end-of-file cleanup DROPs need NOT be `IF EXISTS` (bare
+  `DROP TABLE t;` is the dominant real pattern). A fully-symmetric IF-EXISTS
+  teardown is optional best practice for suites likely to be re-run after a
+  mid-file failure.
 - Comments always on their OWN line above a statement — a trailing
   same-line comment can break the CTP runner.
 
@@ -42,9 +56,15 @@ self-review gate checks them with the reviewer doctrine afterwards.
   values instead (`count(*)`, `bit_length(...)`, `typeof(...)`, substrings).
 - Simple, distinct data values (`1,2,3` / `'a','b'`) so answer diffs read
   cleanly; explicit column lists on INSERT when it aids readability.
-- Plan tests: pin the plan — hints (`NO_ELIMINATE_JOIN`, `ORDERED`,
-  `MATERIALIZE`, `/*+ recompile */`) where needed; `UPDATE STATISTICS ON
-  <tables>` scoped to the tables under test, never `all classes`.
+- Plan tests: create an EMPTY `cases/<name>.queryPlan` sidecar (case-sensitive
+  extension) to make CTP emit the query plan into the result — this is the
+  house convention; do NOT use the inline `--@queryplan` directive for new
+  drafts. Pin the plan with hints (`NO_ELIMINATE_JOIN`, `ORDERED`,
+  `MATERIALIZE`, `/*+ recompile */`) where needed; scope `UPDATE STATISTICS ON
+  <tables>` to the tables under test, never `all classes`. Note: a
+  `.queryPlan` case cannot be verified via remote Builder-Tester (no sidecar
+  channel — see builder-tester-verification.md); generate/verify its answer on
+  a local CTP host.
 
 ## Error cases
 
@@ -54,6 +74,14 @@ self-review gate checks them with the reviewer doctrine afterwards.
 - Mark intentional error cases in the caption ("expects Error:-NNN").
 - An unexpected error/result may be a product bug: do not design the case
   to bake it in — flag it for a CBRD issue instead.
+- Answer variants are opt-in, created only on a real divergence and kept in
+  sync thereafter: `answers/<name>.answer_cci` (CCI output differs — rare,
+  seen mainly in older plan/trace cases) and `.answer_WIN` (Windows differs —
+  effectively unused in recent cases). Do not add them speculatively.
+- For files with several negative cases, a recommended enhancement (seen in
+  recent `_36_guava` cases) is a defensive `SELECT COUNT(*)` catalog/state
+  sanity-check after each error, using a distinct object name per negative
+  case, so a masked failure can't pass silently.
 
 ## Faithfulness and minimality
 
