@@ -24,3 +24,23 @@ for item in data.get("items", []):
             sys.exit(0)
 print("no attempt log available to sample (reports have no results yet)")
 PY
+echo "== sql report + artifact (read-only) =="
+python3 - "$here" <<'PY'
+import sys, os
+sys.path.insert(0, sys.argv[1])
+import btlib
+data = btlib.bt_request("/api/reports?pageSize=50")
+sqlrep = next((it for it in data.get("items", []) if it.get("testType") == "sql"), None)
+if not sqlrep:
+    print("no SQL report available to sample yet (ok)"); sys.exit(0)
+print("sql report:", sqlrep["id"])
+for r in sqlrep.get("results", []):
+    for a in r.get("attemptLogMetadata", []):
+        if a.get("artifactType") and a.get("logFileName"):   # artifact, not a plain log
+            txt = btlib.bt_get_text("/api/log/%s/tests/%s" % (sqlrep["id"], a["logFileName"]))
+            assert txt is not None, "empty artifact"
+            print("sql artifact OK: %s %s (%d bytes)"
+                  % (a["artifactType"], a["logFileName"], len(txt)))
+            sys.exit(0)
+print("SQL report has no artifact to sample (ok)")
+PY
