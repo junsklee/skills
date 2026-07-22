@@ -505,12 +505,67 @@ def _post_build(req):
     return parse_submit_response(bt_request("/api/builder/build", method="POST", data=req))
 
 
-def _submit(script_text, entry_abs, commits, args, yes):
-    case_dir = os.path.dirname(os.path.abspath(entry_abs))
-    atts = collect_attachments(case_dir, entry_abs)
-    req = build_request(script_text, commits, worker_ips(), attachments=atts,
-                        run_mode=args.run_mode, min_runs=args.min_runs,
-                        max_runs=args.max_runs, build_type=args.build_type)
+def test_type_of(args):
+    if getattr(args, "test_type", None):
+        return args.test_type
+    script = getattr(args, "script", None)
+    if script and script.endswith(".sql"):
+        return "sql"
+    return "shell"
+
+
+def resolve_runs(args, test_type):
+    lo, hi = (1, 1) if test_type == "sql" else (2, 2)
+    if getattr(args, "min_runs", None) is None:
+        args.min_runs = lo
+    if getattr(args, "max_runs", None) is None:
+        args.max_runs = hi
+
+
+def show_sql_diff(report, judged, task_id):
+    """Best-effort: on a non-VERIFIED SQL run, print the failing commit's
+    answer_diff. Never raises — a fetch blip must not swallow the verdict."""
+    if report_test_type(report) != "sql" or judged.get("verdict") == "VERIFIED":
+        return
+    for sha in (judged.get("post_sha"), judged.get("pre_sha")):
+        diffs = find_artifacts(report, sha, "answer_diff")
+        if not diffs:
+            continue
+        try:
+            text = bt_get_text("/api/log/%s/tests/%s" % (task_id, diffs[0]))
+        except BuilderTesterError as e:
+            print("  (could not fetch answer_diff: %s)" % e)
+            return
+        if text:
+            print("\n--- answer_diff (%s) ---" % sha[:7])
+            print(text[:4000])
+        return
+
+
+def _submit(script_text, entry_abs, commits, args, yes, test_type):
+    entry_abs = os.path.abspath(entry_abs)
+    if test_type == "sql":
+        if has_queryplan_sidecar(entry_abs):
+            sys.exit("this case has a .queryPlan sidecar — its answer contains plan output "
+                     "that custom SQL mode cannot reproduce; verify it on a local CTP host")
+        answer_path = getattr(args, "answer", None) or resolve_answer_path(entry_abs)
+        try:
+            answer_text = _load_script(answer_path)
+        except (IOError, OSError):
+            answer_text = None
+        if not answer_text:
+            sys.exit("no usable answer at %s (missing or empty) — derive it first: "
+                     "verify_testcase.py derive-answer --test-type sql --script %s "
+                     "(--engine-pr/--issue/--post)" % (answer_path, entry_abs))
+        req = build_sql_request(script_text, answer_text, commits, worker_ips(),
+                                run_mode=args.run_mode, min_runs=args.min_runs,
+                                max_runs=args.max_runs, build_type=args.build_type)
+    else:
+        case_dir = os.path.dirname(entry_abs)
+        atts = collect_attachments(case_dir, entry_abs)
+        req = build_request(script_text, commits, worker_ips(), attachments=atts,
+                            run_mode=args.run_mode, min_runs=args.min_runs,
+                            max_runs=args.max_runs, build_type=args.build_type)
     if not yes:
         print("[dry-run] POST %s/api/builder/build" % builder_url())
         print(json.dumps(elide_payload(req), indent=2))
@@ -588,8 +643,10 @@ def _print_and_exit(judged, task_id):
 
 
 def cmd_submit(args):
+    tt = test_type_of(args)
+    resolve_runs(args, tt)
     commits, _pre, _post = _resolve_and_echo(args)
-    _submit(_load_script(args.script), args.script, commits, args, args.yes)
+    _submit(_load_script(args.script), args.script, commits, args, args.yes, tt)
 
 
 def cmd_wait(args):
@@ -603,21 +660,25 @@ def cmd_judge(args):
     if report is None:
         _print_and_exit(inconclusive("no report found for %s" % args.task_id, pre, post),
                         args.task_id)
-    _print_and_exit(judge_matrix(results_by_commit(report), pre, post, args.special_case),
-                    args.task_id)
+    judged = judge_matrix(results_by_commit(report), pre, post, args.special_case)
+    show_sql_diff(report, judged, args.task_id)
+    _print_and_exit(judged, args.task_id)
 
 
 def cmd_run(args):
+    tt = test_type_of(args)
+    resolve_runs(args, tt)
     commits, pre, post = _resolve_and_echo(args)
-    task_id = _submit(_load_script(args.script), args.script, commits, args, args.yes)
+    task_id = _submit(_load_script(args.script), args.script, commits, args, args.yes, tt)
     if task_id is None:
         return  # dry-run
     try:
         report = _wait(task_id, args.timeout)
     except BuilderTesterError as e:
         _print_and_exit(inconclusive(str(e), pre, post), task_id)
-    _print_and_exit(judge_matrix(results_by_commit(report), pre, post, args.special_case),
-                    task_id)
+    judged = judge_matrix(results_by_commit(report), pre, post, args.special_case)
+    show_sql_diff(report, judged, task_id)
+    _print_and_exit(judged, task_id)
 
 
 def _derive_meta(report, post_sha):
@@ -707,11 +768,19 @@ def _add_commit_args(p):
                    help="submit only the post-fix commit")
 
 
+def _add_sql_type_args(p):
+    p.add_argument("--test-type", choices=["shell", "sql"], default=None,
+                   help="default shell; inferred sql from a .sql --script")
+    p.add_argument("--answer", default=None,
+                   help="SQL only: answer file (default: sibling answers/<name>.answer)")
+
+
 def _add_run_args(p):
     p.add_argument("--run-mode", default="fixed-runs")
-    p.add_argument("--min-runs", type=int, default=2)
-    p.add_argument("--max-runs", type=int, default=2)
+    p.add_argument("--min-runs", type=int, default=None)
+    p.add_argument("--max-runs", type=int, default=None)
     p.add_argument("--build-type", default="debug")
+    _add_sql_type_args(p)
     p.add_argument("--special-case", default=None,
                    choices=["core-dump", "flaky-repro", "feature"],
                    help="waive the pre-fix-must-fail expectation")
@@ -738,6 +807,8 @@ def main():
     _add_commit_args(pj)
     pj.add_argument("--special-case", default=None,
                     choices=["core-dump", "flaky-repro", "feature"])
+    pj.add_argument("--test-type", choices=["shell", "sql"], default=None,
+                    help="accepted for symmetry; judge auto-detects from the report")
 
     prn = sub.add_parser("run")
     prn.add_argument("--script", required=True)

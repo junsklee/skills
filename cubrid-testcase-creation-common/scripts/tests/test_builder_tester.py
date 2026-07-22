@@ -621,5 +621,127 @@ class TestElideSqlAndLogsFilter(unittest.TestCase):
         self.assertEqual(by["aa136ea1111"]["logs"], ["sql_aa136ea_x.log"])
 
 
+class TestTestTypeOf(unittest.TestCase):
+    def _ns(self, **k):
+        import argparse
+        return argparse.Namespace(**k)
+
+    def test_explicit_wins(self):
+        self.assertEqual(vt.test_type_of(self._ns(test_type="sql", script="x.sh")), "sql")
+
+    def test_inferred_from_sql_suffix(self):
+        self.assertEqual(vt.test_type_of(self._ns(test_type=None, script="a/b.sql")), "sql")
+
+    def test_defaults_shell(self):
+        self.assertEqual(vt.test_type_of(self._ns(test_type=None, script="a/b.sh")), "shell")
+
+
+class TestResolveRuns(unittest.TestCase):
+    def _ns(self, mn, mx):
+        import argparse
+        return argparse.Namespace(min_runs=mn, max_runs=mx)
+
+    def test_sql_defaults_1_1(self):
+        a = self._ns(None, None); vt.resolve_runs(a, "sql")
+        self.assertEqual((a.min_runs, a.max_runs), (1, 1))
+
+    def test_shell_defaults_2_2(self):
+        a = self._ns(None, None); vt.resolve_runs(a, "shell")
+        self.assertEqual((a.min_runs, a.max_runs), (2, 2))
+
+    def test_explicit_preserved(self):
+        a = self._ns(3, 5); vt.resolve_runs(a, "sql")
+        self.assertEqual((a.min_runs, a.max_runs), (3, 5))
+
+
+class TestShowSqlDiff(unittest.TestCase):
+    def setUp(self):
+        self._orig = vt.bt_get_text
+
+    def tearDown(self):
+        vt.bt_get_text = self._orig
+
+    REPORT = {"testType": "sql", "results": [{"commit": "POSTsha", "attemptLogMetadata": [
+        {"attempt": 1, "logFileName": "sql_POST_x.log", "status": "fail"},
+        {"attempt": 1, "logFileName": "sql_diff_POST_x.diff", "artifactType": "answer_diff"}]}]}
+
+    def _judged(self, verdict):
+        return {"verdict": verdict, "pre_sha": "PREsha", "post_sha": "POSTsha"}
+
+    def test_prints_diff_on_not_verified(self):
+        calls = []
+        vt.bt_get_text = lambda path, **k: calls.append(path) or "DIFF-TEXT-HERE"
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            vt.show_sql_diff(self.REPORT, self._judged("NOT-VERIFIED"), "req_1")
+        self.assertIn("DIFF-TEXT-HERE", buf.getvalue())
+        self.assertTrue(calls)
+
+    def test_verified_fetches_nothing(self):
+        calls = []
+        vt.bt_get_text = lambda path, **k: calls.append(path) or "x"
+        vt.show_sql_diff(self.REPORT, self._judged("VERIFIED"), "req_1")
+        self.assertEqual(calls, [])
+
+    def test_fetch_failure_is_soft(self):
+        def boom(path, **k):
+            raise vt.BuilderTesterError("blip")
+        vt.bt_get_text = boom
+        # must NOT raise — the verdict must still be printable afterwards
+        vt.show_sql_diff(self.REPORT, self._judged("NOT-VERIFIED"), "req_1")
+
+
+class TestCliSqlDryRun(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.cases = os.path.join(self.d, "sql", "_13_issues", "_26_2h", "cases")
+        self.answers = os.path.join(self.d, "sql", "_13_issues", "_26_2h", "answers")
+        os.makedirs(self.cases); os.makedirs(self.answers)
+        self.sql = os.path.join(self.cases, "cbrd_1.sql")
+        with open(self.sql, "w") as fh:
+            fh.write("select 1;\n")
+        self.ans = os.path.join(self.answers, "cbrd_1.answer")
+        with open(self.ans, "w") as fh:
+            fh.write("===\n1\n")
+        self.vt_path = os.path.join(os.path.dirname(__file__), "..", "verify_testcase.py")
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def _run(self, *extra):
+        env = dict(os.environ); env["BUILDER_TESTER_URL"] = "http://127.0.0.1:1"
+        return subprocess.run([sys.executable, self.vt_path, "submit", "--script", self.sql,
+                               "--pre", "AAA", "--post", "BBB"] + list(extra),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+
+    def test_sql_submit_dry_run(self):
+        out = self._run(); text = out.stdout.decode("utf-8")
+        self.assertEqual(out.returncode, 0, text)
+        self.assertIn("[dry-run]", text)
+        self.assertIn('"testType": "sql"', text)
+        self.assertIn("customSqlAnswer", text)
+
+    def test_missing_answer_errors(self):
+        os.remove(self.ans)
+        out = self._run()
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("derive-answer", out.stdout.decode("utf-8"))
+
+    def test_empty_answer_errors_not_traceback(self):
+        open(self.ans, "w").close()  # exists but 0 bytes
+        out = self._run()
+        self.assertNotEqual(out.returncode, 0)
+        text = out.stdout.decode("utf-8")
+        self.assertIn("derive-answer", text)
+        self.assertNotIn("Traceback", text)
+
+    def test_queryplan_sidecar_blocks_run(self):
+        open(os.path.join(self.cases, "cbrd_1.queryPlan"), "w").close()
+        out = self._run()
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("queryPlan", out.stdout.decode("utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()
