@@ -39,7 +39,10 @@ remote Builder-Tester verification via `verify_testcase.py` (see
 before the push gate and collapses the handoff — the verdict block becomes the
 run evidence carried into the PR body. Order of preference for shell:
 remote Builder-Tester → local CTP (`CUBRID_TC_ALLOW_LOCAL_CTP=1`) → printed
-handoff. SQL cases have no remote option (the executor is shell-only).
+handoff. SQL cases have the same three rungs via the Builder-Tester custom
+SQL API (`verify_testcase.py --test-type sql`): remote (derive answer +
+pre/post verify) → local CTP → handoff. A `.sql` with a `.queryPlan` sidecar
+has no remote option (no sidecar channel) and uses local CTP / handoff.
 
 ## Confirmation gates (both are hard gates)
 
