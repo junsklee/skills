@@ -88,6 +88,12 @@ self-review gate checks them with the reviewer doctrine afterwards.
 - Reproduce the EXACT issue conditions from JIRA/engine PR: same syntax
   form, same predicate/expression shape, required `SET SYSTEM PARAMETERS`.
   A look-alike scenario that misses the code path is worthless.
+- Attached repro files (`$work/attachments/`, when present) are the
+  strongest starting point — especially an attached `.sql`. Conform them to
+  this doctrine (header, evaluate labels, ORDER BY, cleanup, placement,
+  determinism) and re-derive/verify the answer: the attachment reflects the
+  reporter's environment, not house conventions or the current engine
+  output.
 - Only what exercises the target issue — no unrelated setup, hints, or
   padding cases. But minimality never trims the issue's OWN variant
   matrix; reviewers ask for broader coverage more than anything else:
