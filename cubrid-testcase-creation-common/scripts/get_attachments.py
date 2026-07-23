@@ -74,6 +74,44 @@ def manifest_line(filename, size, mime, status):
     return "%s\t%s\t%s\t%s" % (filename, size, mime, status)
 
 
+def iter_archive_members(data, filename):
+    """Yield (member_name, bytes) for regular text/code members of an archive."""
+    if filename.lower().endswith(".zip"):
+        zf = zipfile.ZipFile(io.BytesIO(data))
+        for info in zf.infolist():
+            if info.filename.endswith("/") or not is_text_member(info.filename):
+                continue
+            yield info.filename, zf.read(info)
+    else:
+        tf = tarfile.open(fileobj=io.BytesIO(data), mode="r:*")
+        for m in tf.getmembers():
+            if not m.isreg() or not is_text_member(m.name):
+                continue
+            fh = tf.extractfile(m)
+            if fh is None:
+                continue
+            yield m.name, fh.read()
+
+
+def extract_archive(data, filename, out_dir, max_bytes):
+    """Write text/code members by BASENAME into out_dir/<stem>/ (collision
+    suffixing); members larger than max_bytes are skipped. Returns count."""
+    sub = os.path.join(out_dir, archive_stem(filename))
+    taken = set()
+    count = 0
+    for name, content in iter_archive_members(data, filename):
+        if len(content) > max_bytes:
+            continue
+        if not os.path.isdir(sub):
+            os.makedirs(sub)
+        dest = dest_name(os.path.basename(name), taken)
+        taken.add(dest)
+        with open(os.path.join(sub, dest), "wb") as fh:
+            fh.write(content)
+        count += 1
+    return count
+
+
 def list_attachments(key, get_json=None):
     get_json = get_json or _get_json
     issue = get_json("/rest/api/2/issue/%s?fields=attachment" % key)
@@ -100,7 +138,11 @@ def process(key, out_dir, max_bytes, list_only, get_json=None, get_bytes=None):
             os.makedirs(out_dir)
         with open(os.path.join(out_dir, name), "wb") as fh:
             fh.write(data)
-        print(manifest_line(name, size, mime, "fetched"))
+        if is_archive(name):
+            n = extract_archive(data, name, out_dir, max_bytes)
+            print(manifest_line(name, size, mime, "extracted:%d members" % n))
+        else:
+            print(manifest_line(name, size, mime, "fetched"))
     return 0
 
 
