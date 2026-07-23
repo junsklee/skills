@@ -168,6 +168,12 @@ combines workload ok AND PID stable AND no new cores.
   client). If the issue is csql-only, drive csql; if it needs a driver,
   embed the CCI client. Add a precondition/control assertion first when a
   NOK must be attributable to the feature, not the data.
+- Attached repro files (`$work/attachments/`, when present) are the
+  strongest starting point — an attached `.sh` reproducer or `.sql` fixture.
+  Conform them to this doctrine (lifecycle skeleton, helpers over raw
+  commands, verdict/evidence contract, cleanup, mode) rather than shipping
+  the reporter's ad-hoc script as-is: the attachment reflects the reporter's
+  environment, not the package shape a reviewer expects.
 - Only what exercises the issue; no padding — but never trim the issue's
   OWN variant matrix (broader coverage is the single most-requested review
   change). For a function/operator bug: exact repro, opposite-sign control,
